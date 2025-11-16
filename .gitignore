@@ -1,0 +1,36 @@
+# ------------------------------------
+# Fichiers de configuration sensibles
+# ------------------------------------
+# Le fichier de variables d'environnement (il contient les secrets !)
+.env
+
+# ------------------------------------
+# Environnements Virtuels (VENV)
+# ------------------------------------
+# Le dossier venv par défaut
+/venv
+# Les dossiers venv spécifiques à vos composants
+/backend/venv/
+/rasa/venv/
+
+# ------------------------------------
+# Python / Cache / Artifacts
+# ------------------------------------
+__pycache__/
+*.pyc
+*.o
+*.so
+.mypy_cache/
+.pytest_cache/
+
+# ------------------------------------
+# Frontend (Node/Vite)
+# ------------------------------------
+/frontend/node_modules/
+/frontend/dist/
+
+# ------------------------------------
+# Base de Données / Fichiers Locaux
+# ------------------------------------
+/backend/database/*.db
+*.log

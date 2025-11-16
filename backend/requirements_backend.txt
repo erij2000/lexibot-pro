@@ -1,0 +1,42 @@
+# requirements_fastapi.txt - Dépendances pour venv_ollama_fastapi
+# ============================================================
+
+# ---------- CORE FASTAPI ----------
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.18
+pydantic==2.10.3
+pydantic-settings==2.6.1
+
+# ---------- AUTH (FASTAPI USERS) ----------
+fastapi-users[sqlalchemy]==13.0.0
+fastapi-users-db-sqlalchemy==6.0.1
+
+# ---------- DATABASE (PostgreSQL Async) ----------
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+
+# ---------- SECURITY ----------
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+PyJWT==2.10.1
+bcrypt==4.2.1
+
+# ---------- NLP ----------
+pyspellchecker==0.8.1
+langdetect==1.0.9
+
+# ---------- NETWORK ----------
+requests==2.32.3
+httpx==0.28.1
+
+# ---------- UTILITIES ----------
+python-dateutil==2.9.0.post0
+python-dotenv==1.0.1
+
+# ---------- OPTIONAL: GOOGLE CALENDAR ----------
+# google-auth==2.36.0
+# google-auth-oauthlib==1.2.1
+# google-auth-httplib2==0.2.0
+# google-api-python-client==2.154.0

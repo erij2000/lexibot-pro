@@ -1,0 +1,95 @@
+version: "3.1"
+
+stories:
+
+- story: greet and positive feedback
+  steps:
+    - intent: greet
+    - action: utter_greet
+    - intent: affirm
+    - action: utter_feedback_positive
+
+- story: greet and negative feedback
+  steps:
+    - intent: greet
+    - action: utter_greet
+    - intent: deny
+    - action: utter_feedback_negative
+
+- story: legal advice divorce
+  steps:
+    - intent: legal_advice_divorce
+    - action: utter_legal_advice_divorce
+
+- story: legal advice inheritance
+  steps:
+    - intent: legal_advice_inheritance
+    - action: utter_legal_advice_inheritance
+
+- story: court documents help
+  steps:
+    - intent: court_documents_help
+    - action: utter_court_documents_help
+
+- story: ask legal question
+  steps:
+    - intent: ask_legal_question
+    - action: action_answer_legal_question
+
+- story: make appointment
+  steps:
+    - intent: prendre_rdv
+    - action: utter_prendre_rdv
+
+- story: faq about location
+  steps:
+    - intent: faq_location
+    - action: utter_faq_location
+
+- story: user clarifies question
+  steps:
+    - intent: clarify
+    - action: utter_clarify
+
+- story: user asks chatbot identity
+  steps:
+    - intent: iamabot
+    - action: utter_iamabot
+
+- story: language change request
+  steps:
+    - intent: language_change_request
+    - action: utter_language_change_confirm
+
+- story: user says goodbye
+  steps:
+    - intent: goodbye
+    - action: utter_goodbye
+
+- story: user goes out of scope
+  steps:
+    - intent: out_of_scope
+    - action: utter_out_of_scope
+
+- story: mood great
+  steps:
+    - intent: mood_great
+    - action: utter_happy
+
+- story: mood unhappy
+  steps:
+    - intent: mood_unhappy
+    - action: utter_cheer_up
+    - action: utter_did_that_help
+
+- story: fallback to Ollama
+  steps:
+    - intent: ask_via_ollama
+    - action: action_chat_ollama
+
+
+
+
+
+
+

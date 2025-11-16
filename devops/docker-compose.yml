@@ -1,0 +1,116 @@
+version: "3.9"
+
+services:
+  # -------------------------------
+  # PostgreSQL Database
+  # -------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: lexibot_postgres
+    environment:
+      POSTGRES_USER: erij_user
+      POSTGRES_PASSWORD: super_secret_erij_mdp
+      POSTGRES_DB: lexibot_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - lexibot_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U erij_user -d lexibot_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------------
+  # FASTAPI Backend
+  # -------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: backend.Dockerfile
+    container_name: lexibot_backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://erij_user:super_secret_erij_mdp@postgres:5432/lexibot_db"
+      JWT_SECRET: "MY_SUPER_SECRET_KEY"
+      OLLAMA_URL: "http://ollama:11434"
+    ports:
+      - "8000:8000"
+    networks:
+      - lexibot_network
+    restart: unless-stopped
+
+  # -------------------------------
+  # Rasa Server
+  # -------------------------------
+  rasa:
+    build:
+      context: ./rasa
+      dockerfile: rasa.Dockerfile
+    container_name: lexibot_rasa
+    ports:
+      - "5005:5005"
+    networks:
+      - lexibot_network
+    volumes:
+      - ./rasa:/app
+    command: >
+      rasa run --enable-api --cors "*" --debug
+    restart: unless-stopped
+
+  # -------------------------------
+  # Rasa Actions Server
+  # -------------------------------
+  rasa_actions:
+    build:
+      context: ./rasa/actions
+      dockerfile: rasaActions.Dockerfile
+    container_name: lexibot_rasa_actions
+    ports:
+      - "5055:5055"
+    networks:
+      - lexibot_network
+    volumes:
+      - ./rasa/actions:/app/actions
+    command: rasa run actions
+    restart: unless-stopped
+    depends_on:
+      - rasa
+
+  # -------------------------------
+  # Streamlit Frontend
+  # -------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: frontend.Dockerfile
+    container_name: lexibot_frontend
+    ports:
+      - "8501:8501"
+    networks:
+      - lexibot_network
+    volumes:
+      - ./frontend:/app
+    command: streamlit run lexibot_app.py --server.address=0.0.0.0
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - rasa
+
+# -------------------------------
+# Volumes definition
+# -------------------------------
+volumes:
+  postgres_data:
+
+# -------------------------------
+# Networks definition
+# -------------------------------
+networks:
+  lexibot_network:
+    driver: bridge

@@ -1,0 +1,111 @@
+# main.py - Point d'entrée FastAPI
+from backend.api.routers import appointment_router, auth_router as auth_router, chatbot_router
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+import uvicorn
+
+from database.config import db_manager
+from auth.auth_config import fastapi_users, auth_backend
+from backend.schemas.users_schema import UserCreate, UserRead, UserUpdate
+from api.routers import users
+
+
+# =====================================================
+# Initialisation base de données
+# =====================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("🚀 Starting API...")
+    # Create tables and default users automatically
+    await db_manager.init_db()
+    stats = await db_manager.get_stats()
+    print(f"📊 Database ready: {stats}")
+    yield
+    print("🛑 API stopped")
+
+
+# =====================================================
+# Création de l'application FastAPI
+# =====================================================
+
+app = FastAPI(
+    title="🤖 Lexibot API FINALE - Ollama + Sécurité + RDV",
+    description="API complète pour Lexibot avec authentification et gestion RDV",
+    version="3.0.0",
+    lifespan=lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:8501", 
+        "http://localhost:8502", 
+        "http://localhost:8503", 
+        "http://localhost:8504"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# =====================================================
+# INCLUSION DES ROUTERS
+# =====================================================
+
+# Routes d'authentification (fastapi-users)
+app.include_router(
+    fastapi_users.get_auth_router(auth_backend), 
+    prefix="/auth/jwt", 
+    tags=["🔐 Authentification"]
+)
+
+app.include_router(
+    fastapi_users.get_register_router(UserRead, UserCreate),
+    prefix="/auth",
+    tags=["🔐 Authentification"],
+)
+
+app.include_router(
+    fastapi_users.get_users_router(UserRead, UserUpdate),
+    prefix="/users",
+    tags=["👥 Utilisateurs"],
+)
+
+# Routes personnalisées
+app.include_router(chatbot_router.router, prefix="/chatbot", tags=["🤖 Chatbot Sécurisé"])
+app.include_router(auth_router.router, prefix="/auth", tags=["🔐 Auth Custom"])
+app.include_router(appointment_router.router, prefix="/appointments", tags=["📅 Rendez-vous"])
+app.include_router(users.router, prefix="/admin", tags=["👩‍⚖️ Administration"])
+
+
+# =====================================================
+# ROUTE RACINE
+# =====================================================
+
+@app.get("/")
+def root():
+    return {"message": "✅ Lexibot API FINALE opérationnelle - Ollama + Sécurité + RDV 🇹🇳"}
+
+
+# =====================================================
+# DÉMARRAGE
+# =====================================================
+
+if __name__ == "__main__":
+    print("🚀 Démarrage API Lexibot FINALE...")
+    print("📖 Documentation: http://localhost:8000/docs")
+    print("🤖 Chatbot sécurisé: /chatbot/ask")
+    print("🔐 Authentification: /auth/jwt/login")
+    print("📅 RDV: /appointments/request")
+    print("👩‍⚖️ Admin mère: /admin/appointments/pending")
+    
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info"
+    )

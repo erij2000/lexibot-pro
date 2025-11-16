@@ -1,0 +1,65 @@
+name: Lexibot CI-CD
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+
+  build-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    # -------------------------------------------------------
+    # CHECKOUT PROJECT
+    # -------------------------------------------------------
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    # -------------------------------------------------------
+    # PYTHON INSTALL
+    # -------------------------------------------------------
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.10"
+
+    # -------------------------------------------------------
+    # INSTALL FASTAPI DEPENDENCIES
+    # -------------------------------------------------------
+    - name: Install FastAPI requirements
+      run: |
+        cd backend
+        pip install -r requirements_fastapi.txt
+
+    # -------------------------------------------------------
+    # INSTALL RASA DEPENDENCIES
+    # -------------------------------------------------------
+    - name: Install Rasa requirements
+      run: |
+        cd rasa
+        pip install -r requirements_rasa.txt
+
+    # -------------------------------------------------------
+    # TEST FASTAPI (optional)
+    # -------------------------------------------------------
+    - name: Run API tests
+      run: |
+        echo "No tests yet"
+
+    # -------------------------------------------------------
+    # BUILD DOCKER IMAGES
+    # -------------------------------------------------------
+    - name: Build Backend Docker image
+      run: |
+        docker build -t lexibot-backend -f docker/backend.Dockerfile .
+
+    - name: Build Frontend Docker image
+      run: |
+        docker build -t lexibot-frontend -f docker/frontend.Dockerfile .
+
+    - name: Build Rasa Docker image
+      run: |
+        docker build -t lexibot-rasa -f docker/rasa.Dockerfile .

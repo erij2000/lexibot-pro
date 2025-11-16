@@ -1,0 +1,24 @@
+from fastapi import APIRouter
+from auth.auth_config import fastapi_users
+from models.user_models import UserRead, UserUpdate
+
+# Ce router utilise la fonctionnalité intégrée de FastAPI-Users pour gérer 
+# les actions qu'un utilisateur peut effectuer sur son propre profil (lecture et mise à jour).
+# Il est automatiquement protégé pour garantir qu'un utilisateur modifie uniquement son propre compte.
+
+# Le tag 'users' est utilisé pour regrouper ces routes dans la documentation OpenAPI.
+router = APIRouter(
+    prefix="/users",
+    tags=["users"],
+)
+
+# Inclusion des routes de gestion de compte de FastAPI-Users
+# '/me' est la route pour lire et mettre à jour le compte de l'utilisateur actuel.
+router.include_router(
+    fastapi_users.get_users_router(UserRead, UserUpdate),
+    # La route par défaut est /users/me
+)
+
+# Note: Les routes d'enregistrement et de connexion sont gérées séparément 
+# par l'inclusion du router 'auth' dans main.py.
+raise HTTPException(status_code=500, detail="Erreur interne serveur.")

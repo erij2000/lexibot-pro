@@ -1,0 +1,184 @@
+# backend/models/models.py
+from typing import Optional, List
+import uuid
+import enum
+from datetime import datetime
+
+# SQLAlchemy 2.0 MIGRATION Imports
+from sqlalchemy.orm import Mapped, mapped_column, relationship, DeclarativeBase
+from sqlalchemy import String, Boolean, DateTime, Text, ForeignKey, Enum as SQLEnum, Integer
+from fastapi_users_db_sqlalchemy import SQLAlchemyBaseUserTableUUID
+from uuid import UUID # Type Python pour UUID
+
+# --- BASE DE DONNÉES (SQLAlchemy 2.0) ---
+
+class Base(DeclarativeBase):
+    """Base déclarative pour tous les modèles."""
+    pass
+
+# -----------------------------
+# ENUMS
+# -----------------------------
+class UserRole(str, enum.Enum):
+    CLIENT = "client"
+    PREMIUM = "premium"
+    LAWYER = "lawyer"
+    ADMIN = "admin"
+
+class UserStatus(str, enum.Enum):
+    PENDING = "pending"
+    ACTIVE = "active"
+    SUSPENDED = "suspended"
+    BANNED = "banned"
+
+class AppointmentStatus(str, enum.Enum):
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    CANCELLED = "cancelled"
+    COMPLETED = "completed"
+
+# -----------------------------
+# MODELES SQLALCHEMY 2.0
+# -----------------------------
+class User(SQLAlchemyBaseUserTableUUID, Base):
+    __tablename__ = "users"
+
+    # Colonnes spécifiques (MIGRATION SYNTAXE 2.0)
+    first_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    last_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    phone: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+
+    # Enums
+    role: Mapped[UserRole] = mapped_column(SQLEnum(UserRole), default=UserRole.CLIENT, nullable=False)
+    status: Mapped[UserStatus] = mapped_column(SQLEnum(UserStatus), default=UserStatus.PENDING, nullable=False)
+
+    preferred_language: Mapped[str] = mapped_column(String(5), default="fr", nullable=False)
+    notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # Relations 2.0
+    conversations: Mapped[List["Conversation"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    appointments: Mapped[List["Appointment"]] = relationship(back_populates="client", cascade="all, delete-orphan")
+
+    # Propriétés (conservées)
+    @property
+    def full_name(self) -> str:
+        return f"{self.first_name} {self.last_name}"
+    @property
+    def is_premium(self) -> bool:
+        return self.role in {UserRole.PREMIUM, UserRole.LAWYER, UserRole.ADMIN}
+    @property
+    def can_access_admin(self) -> bool:
+        return self.role in {UserRole.LAWYER, UserRole.ADMIN}
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    # MIGRATION SYNTAXE 2.0
+    id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    category: Mapped[str] = mapped_column(String(100), default="Général", nullable=False)
+    language: Mapped[str] = mapped_column(String(5), default="fr", nullable=False)
+    model_used: Mapped[str] = mapped_column(String(50), default="phi3:mini", nullable=False)
+    messages: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    user: Mapped["User"] = relationship(back_populates="conversations")
+
+
+class Appointment(Base):
+    __tablename__ = "appointments"
+
+    # MIGRATION SYNTAXE 2.0
+    id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    client_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    subject: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    preferred_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    confirmed_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    duration_minutes: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
+    location: Mapped[str] = mapped_column(String(200), default="Cabinet Hila Ben Arbia, Sousse", nullable=False)
+    status: Mapped[AppointmentStatus] = mapped_column(SQLEnum(AppointmentStatus), default=AppointmentStatus.PENDING, nullable=False)
+    approved_by_lawyer: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    lawyer_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    google_event_id: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    client: Mapped["User"] = relationship(back_populates="appointments")
+
+# -----------------------------
+# SYSTÈME DE PERMISSIONS (CONSERVÉ)
+# -----------------------------
+class Permission:
+    """Système de permissions basé sur les rôles avec logique métier étendue."""
+    ROLE_PERMISSIONS = {
+        # ... (Toute la logique ROLE_PERMISSIONS est conservée ici)
+        UserRole.CLIENT: [
+            "use_chatbot",
+            "request_appointment",
+            "view_own_data",
+        ],
+        UserRole.PREMIUM: [
+            "use_chatbot",
+            "request_appointment",
+            "view_own_data",
+            "view_own_history",
+            "priority_support",
+        ],
+        UserRole.LAWYER: [
+            "use_chatbot",
+            "view_own_data",
+            "view_own_history",
+            "manage_appointments",
+            "view_all_conversations",
+            "manage_calendar",
+            "view_analytics",
+        ],
+        UserRole.ADMIN: [
+            "use_chatbot",
+            "request_appointment",
+            "view_own_data",
+            "view_own_history",
+            "manage_appointments",
+            "view_all_conversations",
+            "manage_users",
+            "system_admin",
+            "view_analytics",
+        ],
+    }
+
+    @classmethod
+    def has_permission(cls, user: User, permission: str) -> bool:
+        """Vérifier si un utilisateur a une permission."""
+        # ... (Logique complète de has_permission est conservée ici)
+        if not user or not getattr(user, "is_active", False):
+            return False
+
+        if permission in {"use_chatbot", "request_appointment"}:
+            if getattr(user, "status", None) in {UserStatus.ACTIVE, UserStatus.PENDING}:
+                role_perms = cls.ROLE_PERMISSIONS.get(user.role, [])
+                return permission in role_perms
+
+        if getattr(user, "status", None) != UserStatus.ACTIVE:
+            return False
+
+        user_permissions = cls.ROLE_PERMISSIONS.get(user.role, [])
+        return permission in user_permissions
+
+    @classmethod
+    def get_user_permissions(cls, user: User) -> List[str]:
+        """Obtenir toutes les permissions d'un utilisateur."""
+        if not user or not getattr(user, "is_active", False) or getattr(user, "status", None) != UserStatus.ACTIVE:
+            return []
+        return cls.ROLE_PERMISSIONS.get(user.role, [])
+        
+    # NOTE: L'implémentation de @staticmethod require_permission n'est plus utile dans FastAPI
+    # car les permissions sont gérées par des dépendances (Depends) sur les routes.

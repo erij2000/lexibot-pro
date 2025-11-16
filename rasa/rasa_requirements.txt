@@ -1,0 +1,26 @@
+# requirements_rasa.txt - For venv_rasa ONLY
+# ============================================================
+
+# ---------- RASA CORE ----------
+rasa==3.6.21
+rasa-sdk==3.6.2
+
+# ---------- DATABASE COMPATIBILITY ----------
+SQLAlchemy==1.4.49          # IMPORTANT: Rasa is NOT compatible with 2.x
+alembic==1.13.2             # Last compatible version with SQLAlchemy 1.4
+
+# ---------- PYDANTIC (Rasa needs v1) ----------
+pydantic==1.10.9
+pydantic-core==2.16.3       # Required by pydantic v1 on modern Python
+
+# ---------- NETWORK / SERVER ----------
+aiohttp==3.9.5
+dnspython==2.3.0
+
+# ---------- SOCKET / CHANNELS ----------
+python-engineio<4.9,>=4.8
+python-socketio<5.10,>=5.9
+
+# ---------- OPTIONAL: TensorFlow (Windows only) ----------
+tensorflow==2.12.0; sys_platform == "win32"
+

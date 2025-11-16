@@ -1,0 +1,119 @@
+from typing import Optional
+
+from fastapi import Depends, HTTPException, status
+from fastapi_users import BaseUserManager, FastAPIUsers
+from fastapi_users.authentication import JWTStrategy, AuthenticationBackend
+from fastapi_users.db import SQLAlchemyUserDatabase
+
+# Import des composants de la nouvelle architecture
+from backend.core.config import settings
+from backend.database.session import get_user_db
+from backend.models.models import User, UserRole
+from backend.schemas.user_schemas import UserRead, UserCreate, UserUpdate
+from backend.core.logging_config import auth_logger # Utilisation du logger spécifique à l'auth
+
+# Définition de la classe UserManager pour la gestion des utilisateurs
+# Cette classe peut être étendue pour gérer des événements spécifiques (création, vérification, etc.)
+class UserManager(BaseUserManager[User, int]):
+    reset_password_token_secret = settings.SECRET
+    verification_token_secret = settings.SECRET
+
+    async def on_after_register(self, user: User, request: Optional[dict] = None):
+        """Action après l'enregistrement d'un utilisateur."""
+        auth_logger.info(f"User {user.id} ({user.email}) has registered.")
+        # Ajoutez ici une logique post-enregistrement (ex: envoi d'email de bienvenue)
+
+    async def on_after_forgot_password(self, user: User, token: str, request: Optional[dict] = None):
+        """Action après une demande de mot de passe oublié."""
+        auth_logger.info(f"User {user.id} ({user.email}) a demandé un mot de passe oublié. Token: {token[:8]}...")
+        # Ajoutez ici la logique d'envoi d'email avec le lien de réinitialisation
+
+    # Cette méthode permet de personnaliser les rôles par défaut lors de la création
+    # Dans notre cas, nous gérons déjà le rôle dans UserCreate
+    # async def create(self, create_model: UserCreate, safe: bool = False, request: Optional[dict] = None) -> User:
+    #    return await super().create(create_model, safe, request)
+
+
+# --- 2. STRATÉGIE D'AUTHENTIFICATION (JWT) ---
+
+# Fonction qui crée la stratégie JWT (Json Web Token) pour la persistance de session
+def get_jwt_strategy() -> JWTStrategy:
+    """Configure la stratégie d'authentification JWT."""
+    return JWTStrategy(
+        secret=settings.SECRET,
+        lifetime_seconds=3600 * 24 * 7,  # Durée de vie du token : 7 jours
+        token_url="/auth/jwt/login"
+    )
+
+# --- 3. BACKENDS D'AUTHENTIFICATION ---
+
+# Définition du backend d'authentification JWT
+auth_backend = AuthenticationBackend(
+    name="jwt",
+    transport=get_jwt_strategy(),
+    get_strategy=get_jwt_strategy,
+)
+
+# --- 4. INSTANCE PRINCIPALE FASTAPI-USERS ---
+
+# Instance principale de FastAPIUsers, connectant le manager, les schémas et l'adaptateur DB
+fastapi_users = FastAPIUsers[User, int](
+    get_user_manager=UserManager,
+    auth_backends=[auth_backend],
+)
+
+# --- 5. DÉPENDANCES DE VÉRIFICATION D'ACCÈS ---
+
+# Dépendance pour s'assurer que l'utilisateur est connecté et actif
+current_active_user = fastapi_users.current_user(active=True)
+
+# Dépendance pour vérifier si l'utilisateur est un ADMIN
+def current_superuser(user: User = Depends(current_active_user)):
+    """Vérifie si l'utilisateur est un superuser (admin)."""
+    if not user.is_superuser:
+        auth_logger.warning(f"Accès Superuser refusé pour l'utilisateur {user.email}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès réservé aux administrateurs."
+        )
+    return user
+
+# Dépendance pour vérifier si l'utilisateur est un ADMIN ou un PRATICIEN
+def current_admin_or_practitioner(user: User = Depends(current_active_user)):
+    """Vérifie si l'utilisateur est ADMIN ou PRATICIEN."""
+    if user.role not in [UserRole.ADMIN, UserRole.PRATITIONER]:
+        auth_logger.warning(f"Accès Admin/Practitioner refusé pour l'utilisateur {user.email}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès réservé aux administrateurs ou praticiens."
+        )
+    return user
+
+# Dépendance pour vérifier les rôles spécifiques avec des permissions
+def check_user_permission(required_role: UserRole):
+    """Factory de dépendances pour vérifier si l'utilisateur a un rôle minimum."""
+    def _check_permission(user: User = Depends(current_active_user)):
+        # Si le rôle requis est ADMIN, seul l'ADMIN passe
+        if required_role == UserRole.ADMIN and user.role != UserRole.ADMIN:
+            auth_logger.warning(f"Accès Rôle ADMIN refusé à {user.email} (rôle: {user.role.value})")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Accès réservé au rôle '{required_role.value}'."
+            )
+        # Si le rôle requis est PRATICIEN, l'ADMIN ou le PRATICIEN passent
+        elif required_role == UserRole.PRATITIONER and user.role not in [UserRole.ADMIN, UserRole.PRATITIONER]:
+            auth_logger.warning(f"Accès Rôle PRATICIEN refusé à {user.email} (rôle: {user.role.value})")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Accès réservé aux rôles '{UserRole.ADMIN.value}' ou '{UserRole.PRATITIONER.value}'."
+            )
+        # Si le rôle requis est UTILISATEUR, tout le monde passe (car ils sont déjà actifs)
+        elif required_role == UserRole.USER and user.role not in [UserRole.ADMIN, UserRole.PRATITIONER, UserRole.USER]:
+             auth_logger.warning(f"Accès Rôle UTILISATEUR refusé à {user.email} (rôle: {user.role.value})")
+             raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Accès réservé aux utilisateurs authentifiés."
+            )
+
+        return user
+    return _check_permission

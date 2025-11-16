@@ -1,0 +1,119 @@
+version: "3.1"
+
+rules:
+
+### 🗣️ Salutations & humeur
+- rule: greet
+  steps:
+    - intent: greet
+    - action: utter_greet
+
+- rule: goodbye
+  steps:
+    - intent: goodbye
+    - action: utter_goodbye
+
+- rule: mood_great
+  steps:
+    - intent: mood_great
+    - action: utter_happy
+
+- rule: mood_unhappy
+  steps:
+    - intent: mood_unhappy
+    - action: utter_cheer_up
+    - action: utter_did_that_help
+
+- rule: cheer_up
+  steps:
+    - intent: cheer_up
+    - action: utter_cheer_up
+
+### 🤖 Identité & hors-sujet
+- rule: bot_challenge
+  steps:
+    - intent: bot_challenge
+    - action: utter_iamabot
+
+- rule: iamabot
+  steps:
+    - intent: iamabot
+    - action: utter_iamabot
+
+- rule: out_of_scope
+  steps:
+    - intent: out_of_scope
+    - action: utter_out_of_scope
+
+### 📍 FAQ & informations pratiques
+- rule: faq_location
+  steps:
+    - intent: faq_location
+    - action: utter_faq_location
+
+- rule: faq_services
+  steps:
+    - intent: faq_services
+    - action: utter_faq_services
+
+- rule: language_change_request
+  steps:
+    - intent: language_change_request
+    - action: utter_language_change_confirm
+
+- rule: cancel_rdv
+  steps:
+    - intent: cancel_rdv
+    - action: utter_cancel_rdv
+
+### 💬 Feedback utilisateur
+- rule: feedback_positive
+  steps:
+    - intent: affirm
+    - action: utter_feedback_positive
+
+- rule: feedback_negative
+  steps:
+    - intent: deny
+    - action: utter_feedback_negative
+
+### ⚖️ Assistance juridique
+- rule: legal_advice_divorce
+  steps:
+    - intent: legal_advice_divorce
+    - action: utter_legal_advice_divorce
+
+- rule: legal_advice_inheritance
+  steps:
+    - intent: legal_advice_inheritance
+    - action: utter_legal_advice_inheritance
+
+- rule: court_documents_help
+  steps:
+    - intent: court_documents_help
+    - action: utter_court_documents_help
+
+- rule: ask_legal_question
+  steps:
+    - intent: ask_legal_question
+    - action: action_answer_legal_question
+
+### 📅 Prise de rendez-vous
+- rule: prendre_rdv
+  steps:
+    - intent: prendre_rdv
+    - action: utter_prendre_rdv
+
+### ❓ Clarification
+- rule: clarify
+  steps:
+    - intent: clarify
+    - action: utter_clarify
+
+### ⚖️ Fallback / Ollama integration
+- rule: fallback_ollama
+  steps:
+    - intent: ask_via_ollama
+    - action: action_chat_ollama
+
+
