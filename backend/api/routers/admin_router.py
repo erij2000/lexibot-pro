@@ -1,6 +1,9 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from typing import List
 from auth.auth_config import fastapi_users
-from models.user_models import UserRead, UserUpdate
+from schemas.users_schema import UserRead, UserUpdate
 
 # Ce router utilise la fonctionnalité intégrée de FastAPI-Users pour gérer 
 # les actions qu'un utilisateur peut effectuer sur son propre profil (lecture et mise à jour).
@@ -21,4 +24,3 @@ router.include_router(
 
 # Note: Les routes d'enregistrement et de connexion sont gérées séparément 
 # par l'inclusion du router 'auth' dans main.py.
-raise HTTPException(status_code=500, detail="Erreur interne serveur.")

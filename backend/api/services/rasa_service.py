@@ -5,8 +5,8 @@ from fastapi import HTTPException, status
 import json
 
 # Imports du projet
-from backend.core.config import settings
-from backend.core.logging_config import logger
+from core.config import settings
+from core.logging_config import logger
 
 class RasaService:
     """

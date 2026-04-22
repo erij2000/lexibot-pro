@@ -1,0 +1,45 @@
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+import uuid
+from typing import List, Dict
+
+from models.models import Conversation, Message
+
+class ConversationService:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get_or_create_conversation(self, user_id: uuid.UUID, conversation_id: uuid.UUID = None) -> Conversation:
+        """Récupère une conversation existante avec ses messages, ou en crée une nouvelle."""
+        if conversation_id:
+            stmt = select(Conversation).options(selectinload(Conversation.messages)).where(
+                Conversation.id == conversation_id, 
+                Conversation.user_id == user_id
+            )
+            result = await self.session.execute(stmt)
+            conv = result.scalar_one_or_none()
+            if conv:
+                return conv
+        
+        # Création d'une nouvelle conversation
+        new_conv = Conversation(user_id=user_id, title="Consultation Juridique Initiale")
+        self.session.add(new_conv)
+        await self.session.commit()
+        await self.session.refresh(new_conv)
+        return new_conv
+
+    async def add_message(self, conversation_id: uuid.UUID, role: str, content: str) -> Message:
+        """Ajoute un message (user ou assistant) à la table Messages."""
+        msg = Message(conversation_id=conversation_id, role=role, content=content)
+        self.session.add(msg)
+        await self.session.commit()
+        return msg
+
+    async def get_history_for_llm(self, conversation_id: uuid.UUID) -> List[Dict[str, str]]:
+        """Récupère l'historique formaté exactement comme Ollama l'exige."""
+        stmt = select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at.asc())
+        result = await self.session.execute(stmt)
+        messages = result.scalars().all()
+        
+        return [{"role": m.role, "content": m.content} for m in messages]

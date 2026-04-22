@@ -7,10 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, or_
 
 # Imports du projet
-from backend.database.session import get_async_session
-from backend.models.models import User, Appointment, AppointmentStatus, UserRole
-from backend.schemas.appointment_schemas import AppointmentCreate, AppointmentUpdate
-from backend.core.logging_config import logger
+from database.session import get_async_session
+from models.models import User, Appointment, AppointmentStatus, UserRole
+from schemas.users_schema import AppointmentCreate, AppointmentUpdate
+from core.logging_config import logger
 
 class CalendarService:
     """Service pour gérer les rendez-vous (création, consultation, modification de statut)."""

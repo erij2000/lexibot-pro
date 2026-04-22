@@ -6,11 +6,11 @@ from fastapi_users.authentication import JWTStrategy, AuthenticationBackend
 from fastapi_users.db import SQLAlchemyUserDatabase
 
 # Import des composants de la nouvelle architecture
-from backend.core.config import settings
-from backend.database.session import get_user_db
-from backend.models.models import User, UserRole
-from backend.schemas.user_schemas import UserRead, UserCreate, UserUpdate
-from backend.core.logging_config import auth_logger # Utilisation du logger spécifique à l'auth
+from core.config import settings
+from database.session import get_user_db
+from models.models import User, UserRole
+from schemas.users_schema import UserRead, UserCreate, UserUpdate
+from core.logging_config import auth_logger # Utilisation du logger spécifique à l'auth
 
 # Définition de la classe UserManager pour la gestion des utilisateurs
 # Cette classe peut être étendue pour gérer des événements spécifiques (création, vérification, etc.)

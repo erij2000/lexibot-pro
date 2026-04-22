@@ -1,0 +1,169 @@
+# backend/services/calendar_service.py - Service de gestion des rendez-vous
+import datetime
+from typing import List, Optional
+from dateutil import parser
+from fastapi import Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, desc, or_
+
+# Imports du projet
+from backend.database.session import get_async_session
+from backend.models.models import User, Appointment, AppointmentStatus, UserRole
+from backend.schemas.users_schema import AppointmentCreate, AppointmentUpdate
+from backend.core.logging_config import logger
+
+class CalendarService:
+    """Service pour gérer les rendez-vous (création, consultation, modification de statut)."""
+    
+    def __init__(self, session: AsyncSession):
+        self.session = session
+        
+    def _validate_preferred_date(self, preferred_date: str) -> datetime.datetime:
+        """Parse et valide que la date de rendez-vous est dans le futur."""
+        try:
+            preferred_dt = parser.isoparse(preferred_date)
+            
+            # Validation: la date doit être dans le futur (en comparant en UTC pour être sûr)
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+
+            # Si la date préférée n'a pas de timezone, on suppose qu'elle est en UTC
+            if preferred_dt.tzinfo is None:
+                preferred_dt = preferred_dt.replace(tzinfo=datetime.timezone.utc)
+
+            if preferred_dt <= now_utc:
+                raise ValueError("La date préférée doit être dans le futur.")
+            
+            return preferred_dt
+                
+        except ValueError as ve:
+            logger.warning(f"Tentative de création de RDV avec date invalide: {ve}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Format de date invalide ou date dans le passé. Détail: {ve}. Utilisez un format ISO 8601 (ex: '2025-12-25T14:30:00+01:00')."
+            )
+        except Exception as e:
+            logger.error(f"Erreur inattendue lors de la validation de la date: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Erreur de validation de la date. Veuillez vérifier le format."
+            )
+
+    async def create_appointment(
+        self, 
+        user: User, 
+        appointment_data: AppointmentCreate
+    ) -> Appointment:
+        """Crée une demande de rendez-vous pour un utilisateur (client)."""
+        
+        preferred_dt = self._validate_preferred_date(appointment_data.preferred_date)
+        
+        # 2. Création de la demande de RDV
+        appointment = Appointment(
+            client_id=user.id, 
+            subject=appointment_data.subject,
+            description=appointment_data.description,
+            preferred_date=preferred_dt,
+            status=AppointmentStatus.PENDING # Toujours en attente à la création
+        )
+        
+        # 3. Sauvegarde en base de données
+        self.session.add(appointment)
+        try:
+            await self.session.commit()
+            await self.session.refresh(appointment)
+            logger.info(f"Nouvelle demande de RDV créée par user {user.id} (ID: {appointment.id})")
+            return appointment
+            
+        except Exception as e:
+            await self.session.rollback()
+            logger.error(f"Erreur lors de la soumission du RDV: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Erreur interne lors de la sauvegarde du rendez-vous."
+            )
+
+    async def get_appointments_for_client(self, client_id: int) -> List[Appointment]:
+        """Récupère tous les rendez-vous d'un client, triés par date préférée."""
+        stmt = select(Appointment).where(
+            Appointment.client_id == client_id
+        ).order_by(
+            Appointment.preferred_date.asc()
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def get_all_appointments_for_admin_or_practitioner(self, status_filter: Optional[AppointmentStatus] = None) -> List[Appointment]:
+        """Récupère tous les rendez-vous pour les rôles Admin/Praticien (avec filtre de statut optionnel)."""
+        stmt = select(Appointment)
+        
+        if status_filter:
+            stmt = stmt.where(Appointment.status == status_filter)
+            
+        # Trie par date préférée, puis par date de création (pour les statuts en attente)
+        stmt = stmt.order_by(
+            Appointment.preferred_date.asc(), 
+            Appointment.created_at.asc()
+        )
+        
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def update_appointment_status(self, appointment_id: int, update_data: AppointmentUpdate, user: User) -> Appointment:
+        """Met à jour le statut d'un rendez-vous (Accepté/Refusé). Réservé aux Praticiens/Admins."""
+        
+        # 1. Récupération du rendez-vous
+        appointment = await self.session.get(Appointment, appointment_id)
+
+        if appointment is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Rendez-vous non trouvé."
+            )
+            
+        # 2. Vérification de l'autorisation (rôle déjà vérifié dans le router, mais on vérifie le praticien_id)
+        if appointment.status != AppointmentStatus.PENDING:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Le statut du rendez-vous est déjà '{appointment.status.value}' et ne peut pas être modifié."
+            )
+            
+        # 3. Application de la mise à jour
+        new_status = update_data.status
+        
+        # Le praticien (ou admin) qui accepte est automatiquement assigné
+        if new_status == AppointmentStatus.ACCEPTED:
+            appointment.practitioner_id = user.id
+            appointment.status = AppointmentStatus.ACCEPTED
+            
+        # Un refus n'assigne personne
+        elif new_status == AppointmentStatus.REJECTED:
+            appointment.status = AppointmentStatus.REJECTED
+            appointment.practitioner_id = None # S'assurer que personne n'est assigné
+            
+        else:
+             raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Le statut '{new_status.value}' est invalide pour la mise à jour."
+            )
+        
+        # 4. Sauvegarde
+        try:
+            await self.session.commit()
+            await self.session.refresh(appointment)
+            logger.info(f"RDV {appointment_id} mis à jour par {user.email}. Nouveau statut: {new_status.value}")
+            return appointment
+        except Exception as e:
+            await self.session.rollback()
+            logger.error(f"Erreur lors de la mise à jour du RDV {appointment_id}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Erreur interne lors de la mise à jour du statut du rendez-vous."
+            )
+            
+# --- Dépendance pour FastAPI ---
+
+def get_calendar_service(
+    session: AsyncSession = Depends(get_async_session)
+) -> CalendarService:
+    """Dépendance qui fournit l'instance du service de calendrier."""
+    return CalendarService(session)

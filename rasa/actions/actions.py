@@ -30,7 +30,7 @@ DEFAULT_LANG = "fr"
 # pour éviter la boucle de fallback (Rasa -> API -> Rasa)
 # =====================================================
 
-OLLAMA_API_URL = "http://127.0.0.1:11434/api/generate" # 👈 Appel direct à Ollama
+OLLAMA_API_URL = "http://host.docker.internal:11434/api/generate" # 👈 Appel direct à Ollama
 OLLAMA_MODEL = "phi3:mini"
 
 def build_prompt(lang: str, category: str, question: str) -> str:

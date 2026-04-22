@@ -1,36 +1,68 @@
-# ------------------------------------
-# Fichiers de configuration sensibles
-# ------------------------------------
-# Le fichier de variables d'environnement (il contient les secrets !)
+# =========================
+# ENV
+# =========================
 .env
+venv/
+.venv/
 
-# ------------------------------------
-# Environnements Virtuels (VENV)
-# ------------------------------------
-# Le dossier venv par défaut
-/venv
-# Les dossiers venv spécifiques à vos composants
-/backend/venv/
-/rasa/venv/
-
-# ------------------------------------
-# Python / Cache / Artifacts
-# ------------------------------------
+# =========================
+# PYTHON
+# =========================
 __pycache__/
 *.pyc
-*.o
-*.so
-.mypy_cache/
-.pytest_cache/
+*.pyo
+*.pyd
 
-# ------------------------------------
-# Frontend (Node/Vite)
-# ------------------------------------
-/frontend/node_modules/
-/frontend/dist/
-
-# ------------------------------------
-# Base de Données / Fichiers Locaux
-# ------------------------------------
-/backend/database/*.db
+# =========================
+# BACKEND
+# =========================
+backend/logs/
 *.log
+
+# =========================
+# RASA (OPTIONAL IGNORE)
+# =========================
+rasa/.rasa/
+rasa/cache/
+rasa/models/
+rasa/logs/
+
+# =========================
+# FRONTEND
+# =========================
+frontend/node_modules/
+frontend/dist/
+
+# =========================
+# DATABASE / DATA
+# =========================
+*.db
+data/
+chroma_db/
+
+# =========================
+# OCR / RAG OUTPUT
+# =========================
+lexiOS_output/
+ocr_output/
+
+# =========================
+# VIRTUAL ENV EXTRA (SAFETY)
+# =========================
+venv_*/
+devops/venv_*/
+backend/venv_*/
+rasa/venv_*/
+
+# =========================
+# TEMP / SYSTEM FILES
+# =========================
+.tmp.driveupload/
+*.tmp
+*.swp
+
+# =========================
+# IDE
+# =========================
+.vscode/
+.idea/

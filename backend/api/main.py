@@ -1,14 +1,14 @@
 # main.py - Point d'entrée FastAPI
-from backend.api.routers import appointment_router, auth_router as auth_router, chatbot_router
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
 
-from database.config import db_manager
+from database.session import db_manager
 from auth.auth_config import fastapi_users, auth_backend
-from backend.schemas.users_schema import UserCreate, UserRead, UserUpdate
+from schemas.users_schema import UserCreate, UserRead, UserUpdate
 from api.routers import users
+from api.routers import appointment_router, auth_router, chatbot_router
 
 
 # =====================================================
@@ -55,31 +55,34 @@ app.add_middleware(
 # INCLUSION DES ROUTERS
 # =====================================================
 
-# Routes d'authentification (fastapi-users)
+# 1. Authentification officielle (JWT) - C'est celle-là qui compte !
 app.include_router(
     fastapi_users.get_auth_router(auth_backend), 
     prefix="/auth/jwt", 
     tags=["🔐 Authentification"]
 )
 
+# 2. Inscription
 app.include_router(
     fastapi_users.get_register_router(UserRead, UserCreate),
     prefix="/auth",
     tags=["🔐 Authentification"],
 )
 
+# 3. Gestion des profils
 app.include_router(
     fastapi_users.get_users_router(UserRead, UserUpdate),
     prefix="/users",
     tags=["👥 Utilisateurs"],
 )
 
-# Routes personnalisées
+# 4. Routes de services
 app.include_router(chatbot_router.router, prefix="/chatbot", tags=["🤖 Chatbot Sécurisé"])
-app.include_router(auth_router.router, prefix="/auth", tags=["🔐 Auth Custom"])
 app.include_router(appointment_router.router, prefix="/appointments", tags=["📅 Rendez-vous"])
 app.include_router(users.router, prefix="/admin", tags=["👩‍⚖️ Administration"])
 
+# ❌ ON SUPPRIME CETTE LIGNE : 
+# app.include_router(auth_router.router, prefix="/auth", tags=["🔐 Auth Custom"])
 
 # =====================================================
 # ROUTE RACINE
@@ -109,3 +112,4 @@ if __name__ == "__main__":
         reload=True,
         log_level="info"
     )
+

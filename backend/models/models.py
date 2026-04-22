@@ -22,7 +22,7 @@ class Base(DeclarativeBase):
 class UserRole(str, enum.Enum):
     CLIENT = "client"
     PREMIUM = "premium"
-    LAWYER = "lawyer"
+    LAWYER = "lawyer" # Le rôle principal pour administrer le cabinet
     ADMIN = "admin"
 
 class UserStatus(str, enum.Enum):
@@ -80,24 +80,39 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     # MIGRATION SYNTAXE 2.0
-    id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     category: Mapped[str] = mapped_column(String(100), default="Général", nullable=False)
     language: Mapped[str] = mapped_column(String(5), default="fr", nullable=False)
-    model_used: Mapped[str] = mapped_column(String(50), default="phi3:mini", nullable=False)
-    messages: Mapped[str] = mapped_column(Text, nullable=False)
+    model_used: Mapped[str] = mapped_column(String(50), default="llama3:latest", nullable=False)
+    
+    # Suppression de la colonne messages en Text, remplacée par la relation !
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     user: Mapped["User"] = relationship(back_populates="conversations")
+    messages: Mapped[List["Message"]] = relationship(back_populates="conversation", cascade="all, delete-orphan", lazy="selectin")
+
+
+# NOUVELLE TABLE MESSAGE (Option 1)
+class Message(Base):
+    __tablename__ = "messages"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), nullable=False)
+    role: Mapped[str] = mapped_column(String(50), nullable=False) # "user" ou "assistant"
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    conversation: Mapped["Conversation"] = relationship(back_populates="messages")
 
 
 class Appointment(Base):
     __tablename__ = "appointments"
 
     # MIGRATION SYNTAXE 2.0
-    id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     client_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     subject: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -120,7 +135,6 @@ class Appointment(Base):
 class Permission:
     """Système de permissions basé sur les rôles avec logique métier étendue."""
     ROLE_PERMISSIONS = {
-        # ... (Toute la logique ROLE_PERMISSIONS est conservée ici)
         UserRole.CLIENT: [
             "use_chatbot",
             "request_appointment",
@@ -158,7 +172,6 @@ class Permission:
     @classmethod
     def has_permission(cls, user: User, permission: str) -> bool:
         """Vérifier si un utilisateur a une permission."""
-        # ... (Logique complète de has_permission est conservée ici)
         if not user or not getattr(user, "is_active", False):
             return False
 
@@ -179,6 +192,3 @@ class Permission:
         if not user or not getattr(user, "is_active", False) or getattr(user, "status", None) != UserStatus.ACTIVE:
             return []
         return cls.ROLE_PERMISSIONS.get(user.role, [])
-        
-    # NOTE: L'implémentation de @staticmethod require_permission n'est plus utile dans FastAPI
-    # car les permissions sont gérées par des dépendances (Depends) sur les routes.

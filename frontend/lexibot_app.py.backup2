@@ -1,0 +1,2672 @@
+# ---------------------------------------------
+# Lexibot UI for Cabinet Hila Ben Arbia
+# ---------------------------------------------
+import streamlit as st
+import requests
+from langdetect import detect
+import datetime as dt
+import html
+import re
+import json
+import time
+from pathlib import Path
+import streamlit.components.v1 as components
+
+# ---------------------------------------------
+# ---------- CONSTANTS AND CONFIG ----------
+# ---------------------------------------------
+
+# Define the base URL for your FastAPI backend
+API_BASE_URL ="http://backend:8000"
+
+# Define your default model name (used in session state initialization)
+MODEL_DEFAULT = "lexi-o3"
+
+# Define the full API endpoint for the chatbot interaction
+API_URL = f"{API_BASE_URL}/chatbot/ask"
+
+# Model mapping: Maps the display name (key) to the actual Ollama model name (value)
+MODEL_MAPPING = {
+    "lexi-o1": "phi3:mini",
+    "lexi-o2": "llama3:instruct", 
+    "lexi-o3": "mistral:instruct"
+}
+
+# Dummy Avatars (Replace with actual URLs if needed)
+USER_AVATAR = "👤"
+BOT_AVATAR = "⚖️"
+LEXIBOT_AVATAR = "https://placehold.co/50x50/33A3A3/FFFFFF?text=L"
+
+
+# ---------- PAGE CONFIGURATION ----------
+st.set_page_config(
+    page_title="Lexibot • Cabinet Hila Ben Arbia",
+    layout="wide",
+    page_icon="⚖️",
+    initial_sidebar_state="expanded"
+)
+
+# ---------- HELPER FUNCTIONS ----------
+def escape_to_html(text: str) -> str:
+    """Enhanced HTML escaping with URL detection"""
+    def url_repl(m):
+        url = m.group(0)
+        return f'<a href="{url}" target="_blank" style="color: var(--accent-green); text-decoration: underline;">{url}</a>'
+    
+    # Remove markdown formatting
+    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+    text = re.sub(r'\*(.*?)\*', r'\1', text)
+    text = re.sub(r'__(.*?)__', r'\1', text)
+    text = re.sub(r'_(.*?)_', r'\1', text)
+    
+    text = html.escape(text)
+    text = re.sub(r"(https?://[^\s]+)", url_repl, text)
+    text = text.replace("\n", "<br>")
+    return text
+
+def lang_detect_safe(text: str, fallback: str) -> str:
+    """Safe language detection"""
+    try:
+        detected = detect(text)
+        if detected.startswith("fr"):
+            return "fr"
+        if detected.startswith("en"):
+            return "en"
+        if detected.startswith("ar"):
+            return "ar"
+        return fallback
+    except Exception:
+        return fallback
+
+
+def authenticate(username, password):
+    # The login URL is correctly constructed here.
+    login_url = f"{API_BASE_URL}/auth/jwt/login" 
+    
+    try:
+        # Use data= for x-www-form-urlencoded
+        response = requests.post(
+            login_url,
+            data={"username": username, "password": password}
+        )
+        if response.status_code == 200:
+            token = response.json().get("access_token")
+            st.session_state.auth_token = token
+            st.session_state.is_authenticated = True
+            st.success("Connexion réussie! Vous êtes connecté.")
+            return True
+        else:
+            # <<< CRITICAL DEBUG CHANGE: Display the full API response for non-200 codes >>>
+            st.error(f"Échec de la connexion. Code: {response.status_code}. Réponse API: {response.text}")
+            return False
+    except requests.exceptions.ConnectionError:
+        # <<< CRITICAL DEBUG CHANGE: Show the full URL being targeted >>>
+        st.error(f"Erreur de connexion à l'API. Assurez-vous que le serveur est accessible à {API_BASE_URL}")
+        return False
+    
+    
+def send_to_api(message: str, category: str, chosen_language: str, model: str = MODEL_DEFAULT, stream=False):
+    # 1. Standardize on the correct token variable (auth_token)
+    token = st.session_state.auth_token
+    
+    # 2. Check for the token and handle the Unauthorized case early
+    if not token:
+        st.error("Token non trouvé. Veuillez vous reconnecter.")
+        # Return a message telling the user to re-authenticate
+        return "🔐 Session expirée ou non connectée. Veuillez vous reconnecter via la barre latérale, puis réessayez.", None
+        
+    # 3. Create the headers dictionary correctly using the valid token
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    
+    """Enhanced API communication with better error handling"""
+    try:
+        actual_model = MODEL_MAPPING.get(model, MODEL_MAPPING[MODEL_DEFAULT])
+        
+        response = requests.post(
+            API_URL, # Ensure API_URL is defined as a constant globally
+            json={
+                "message": message,
+                "model": actual_model,
+                "stream": stream,
+                "category": category,
+                "chosen_language": chosen_language
+            },
+            timeout=30,  # Reasonable timeout
+            headers=headers # <-- USE THE CORRECT, AUTHENTICATED HEADERS
+        )
+
+        # Explicit 401 handling (still good to keep for clarity)
+        if response.status_code == 401:
+            # This should technically not be hit if the token check above is correct, 
+            # but is useful for expired tokens.
+            return "🔐 Session expirée. Veuillez vous reconnecter.", None
+            
+        response.raise_for_status() # Raises an HTTPError for bad responses (4xx or 5xx)
+        data = response.json()
+        
+        # ... (Rest of your excellent response parsing logic remains the same) ...
+        if isinstance(data, dict) and "response" in data:
+            return data["response"], data
+        # ... (The rest of your response parsing logic) ...
+        # ...
+        
+    except requests.exceptions.ConnectionError as e:
+        return "🔌 Impossible de se connecter à l'API. Vérifiez que le serveur API est démarré sur http://backend:8000", None
+    except requests.exceptions.Timeout as e:
+        return "⏰ Délai d'attente dépassé. Le serveur API met trop de temps à répondre.", None
+    except requests.exceptions.RequestException as e:
+        return f"❌ Erreur réseau/API : {str(e)[:100]}...", None
+    except Exception as e:
+        return f"❌ Erreur inattendue : {str(e)[:100]}...", None
+    
+    
+    
+def render_message(role: str, text: str, lang: str, avatar_url: str, timestamp: str):
+    """Enhanced message rendering with proper text alignment"""
+    # Force left alignment for French/English, right for Arabic only
+    text_direction = "rtl" if lang == "ar" else "ltr"
+    text_align = "right" if lang == "ar" else "left"
+    
+    html_content = f"""
+    <div class="message-row {role} fade-in">
+        <img class="message-avatar" src="{avatar_url}" alt="{role}">
+        <div class="message-bubble {role}" style="direction: {text_direction}; text-align: {text_align};">
+            <div class="message-content" style="direction: {text_direction}; text-align: {text_align};">
+                {escape_to_html(text)}
+            </div>
+            <div class="message-time">{timestamp}</div>
+        </div>
+    </div>
+    """
+    st.markdown(html_content, unsafe_allow_html=True)
+
+# ---------- SESSION STATE INITIALIZATION (MUST BE BEFORE CSS) ----------
+if "chat" not in st.session_state:
+    st.session_state.chat = []
+if "ui_lang" not in st.session_state:
+    st.session_state.ui_lang = "fr"
+if "model" not in st.session_state:
+    st.session_state.model = "lexi-o3"
+if "exported" not in st.session_state:
+    st.session_state.exported = False
+if "last_request" not in st.session_state:
+    st.session_state.last_request = 0
+if "last_interaction" not in st.session_state:
+    st.session_state.last_interaction = time.time()
+if "conversation_history" not in st.session_state:
+    st.session_state.conversation_history = []
+if "current_conversation_id" not in st.session_state:
+    st.session_state.current_conversation_id = None
+if "unsaved_changes" not in st.session_state:
+    st.session_state.unsaved_changes = False
+if "auto_saved" not in st.session_state:
+    st.session_state.auto_saved = False
+if "_history_loaded" not in st.session_state:
+    st.session_state._history_loaded = False
+if "is_authenticated" not in st.session_state:
+    st.session_state.is_authenticated = False
+if "auth_token" not in st.session_state:
+    st.session_state.auth_token = None
+if "user_data" not in st.session_state:
+    st.session_state.user_data = None
+
+# ---------- ENHANCED CSS ----------
+def get_css(ui_lang):
+    rtl_direction = "rtl" if ui_lang == "ar" else "ltr"
+    return f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700&display=swap');
+
+/* Root variables for consistent theming */
+:root {{
+    --primary-gold: #d4af37;
+    --primary-gold-light: #f4e7a1;
+    --primary-gold-dark: #b8941f;
+    --primary-blue: #0f172a;
+    --primary-blue-light: #1e293b;
+    --accent-green: #10b981;
+    --accent-green-light: #34d399;
+    --text-primary: #f8fafc;
+    --text-secondary: #e2e8f0;
+    --text-muted: #94a3b8;
+    --glass-bg: rgba(15, 23, 42, 0.85);
+    --glass-border: rgba(255, 255, 255, 0.1);
+    --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.3);
+    --shadow-xl: 0 25px 50px -12px rgba(0, 0, 0, 0.4);
+    /* Design system tokens */
+    --radius-sm: 10px;
+    --radius-md: 16px;
+    --radius-lg: 20px;
+    --radius-xl: 24px;
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 24px;
+    --space-6: 32px;
+    --space-8: 48px;
+    --fs-xs: 0.85rem;
+    --fs-sm: 0.95rem;
+    --fs-md: 1rem;
+    --fs-lg: 1.125rem;
+    --fs-xl: 1.25rem;
+    --fs-2xl: 1.5rem;
+    --control-h-d: 48px; /* desktop control height */
+    --control-h-m: 44px; /* mobile control height */
+}}
+
+/* Global typography overrides */
+body, .stApp, .main, .stText, .stMarkdown, input, textarea, button, select {{
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+}}
+/* Keep icon fonts intact */
+.material-icons, [class*="material-icons"], i[class^="icon"], i[class*="icon"] {{
+    font-family: 'Material Icons' !important;
+}}
+
+html, body, .main {{
+    direction: {rtl_direction};
+}}
+
+/* Hide Streamlit elements */
+.stDeployButton {{ display: none !important; }}
+.stDecoration {{ display: none !important; }}
+#MainMenu {{ visibility: hidden !important; }}
+footer {{ visibility: hidden !important; }}
+header {{ visibility: hidden !important; }}
+
+
+/* App background */
+.stApp {{
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 30%, #334155 70%, #0f172a 100%);
+    background-attachment: fixed;
+}}
+
+/* Main container */
+.main .block-container {{
+    padding-top: 2rem !important;
+    padding-bottom: 2rem !important;
+    max-width: 1200px !important;
+}}
+
+/* Enhanced glass morphism */
+.glass-card {{
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--glass-border);
+    border-radius: 24px;
+    box-shadow: var(--shadow-xl);
+    padding: 2rem;
+    margin-bottom: 1.5rem;
+    position: relative;
+    overflow: hidden;
+}}
+
+.glass-card::before {{
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--primary-gold), transparent);
+    background-size: 200% 100%;
+    animation: sheen-slide 6s ease-in-out infinite;
+    opacity: 0.35;
+}}
+
+/* Header styling */
+.header-container {{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.5rem 2rem;
+    background: linear-gradient(135deg, rgba(212, 175, 55, 0.15), rgba(30, 41, 59, 0.8));
+    border: 1px solid rgba(212, 175, 55, 0.3);
+    border-radius: 20px;
+    margin-bottom: 2rem;
+    backdrop-filter: blur(15px);
+}}
+
+.header-title {{
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    font-size: 1.8rem;
+    font-weight: 800;
+    color: var(--primary-gold-light);
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}}
+
+.header-badge {{
+    padding: 0.75rem 1.5rem;
+    background: rgba(212, 175, 55, 0.2);
+    border: 1px solid var(--primary-gold);
+    border-radius: 50px;
+    color: var(--primary-gold-light);
+    font-weight: 600;
+    font-size: 0.9rem;
+    white-space: nowrap;
+}}
+
+/* Chat container */
+.chat-container {{
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 20px;
+    padding: 1.75rem;
+    margin-bottom: 2rem;
+    max-height: 72vh;
+    min-height: 200px;
+    overflow-y: auto;
+    backdrop-filter: blur(15px);
+}}
+
+/* Custom scrollbar */
+.chat-container::-webkit-scrollbar {{
+    width: 8px;
+}}
+
+.chat-container::-webkit-scrollbar-track {{
+    background: rgba(15, 23, 42, 0.5);
+    border-radius: 10px;
+}}
+
+.chat-container::-webkit-scrollbar-thumb {{
+    background: linear-gradient(var(--primary-gold), var(--primary-gold-dark));
+    border-radius: 10px;
+}}
+
+/* Message styling */
+.message-row {{
+    display: flex;
+    align-items: flex-end;
+    margin: 1.1rem 0;
+    gap: 0.75rem;
+}}
+
+.message-row.user {{
+    justify-content: flex-end;
+    flex-direction: {('row-reverse' if ui_lang == 'ar' else 'row')};
+}}
+
+.message-row.bot {{
+    justify-content: flex-start;
+    flex-direction: {('row' if ui_lang == 'ar' else 'row')};
+}}
+
+.message-avatar {{
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    border: 2px solid var(--primary-gold);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    flex-shrink: 0;
+}}
+
+.message-bubble {{
+    max-width: 72%;
+    padding: 1rem 1.25rem;
+    border-radius: 20px;
+    font-size: 1rem;
+    line-height: 1.5;
+    color: var(--text-primary);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.30);
+    position: relative;
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    hyphens: auto;
+    text-align: left !important;
+    direction: ltr !important;
+}}
+
+/* Optional small tail (minimal) */
+.message-bubble::after {{
+    content: '';
+    position: absolute;
+    bottom: 12px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: inherit;
+    box-shadow: 0 6px 14px rgba(0,0,0,0.18);
+    left: 12px;
+}}
+
+.message-bubble.user {{
+    background: radial-gradient(120% 120% at 20% 0%, rgba(16,185,129,0.28), rgba(5,150,105,0.18)),
+                linear-gradient(135deg, rgba(16,185,129,0.18), rgba(5,150,105,0.14));
+    border: 1px solid rgba(16,185,129,0.6);
+}}
+
+.message-bubble.bot {{
+    background: radial-gradient(120% 120% at 20% 0%, rgba(212,175,55,0.28), rgba(184,148,31,0.16)),
+                linear-gradient(135deg, rgba(212,175,55,0.18), rgba(184,148,31,0.12));
+    border: 1px solid rgba(212,175,55,0.6);
+}}
+
+.message-time {{
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 0.5rem;
+    text-align: {('left' if ui_lang == 'ar' else 'right')};
+}}
+
+/* Typing animation */
+.typing-indicator {{
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--text-secondary);
+}}
+
+.typing-dots {{
+    display: flex;
+    gap: 4px;
+}}
+
+.typing-dots span {{
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--primary-gold);
+    animation: typing-bounce 1.4s infinite;
+}}
+
+.typing-dots span:nth-child(2) {{ animation-delay: 0.2s; }}
+.typing-dots span:nth-child(3) {{ animation-delay: 0.4s; }}
+
+@keyframes typing-bounce {{
+    0%, 80%, 100% {{ transform: translateY(0); opacity: 0.5; }}
+    40% {{ transform: translateY(-8px); opacity: 1; }}
+}}
+
+
+/* Form styling */
+.stTextArea textarea {{
+    background: var(--glass-bg) !important;
+    border: 2px solid var(--glass-border) !important;
+    border-radius: 16px !important;
+    color: var(--text-primary) !important;
+    font-size: 1rem !important;
+    padding: 1rem 1.25rem !important;
+    min-height: 120px !important;
+    resize: vertical !important;
+    direction: {rtl_direction} !important;
+}}
+
+.stTextArea textarea::placeholder {{
+    color: rgba(248, 250, 252, 0.7) !important;
+    opacity: 1 !important;
+}}
+
+.stTextArea textarea::-webkit-input-placeholder {{
+    color: rgba(248, 250, 252, 0.7) !important;
+    opacity: 1 !important;
+}}
+
+.stTextArea textarea::-moz-placeholder {{
+    color: rgba(248, 250, 252, 0.7) !important;
+    opacity: 1 !important;
+}}
+
+.stTextArea textarea:focus {{
+    border-color: var(--primary-gold) !important;
+    box-shadow: 0 0 0 3px rgba(212, 175, 55, 0.2) !important;
+    outline: none !important;
+}}
+
+/* Modern select styling (scoped & safe) */
+/* Reset Streamlit select wrappers to avoid giant boxes */
+.stSelectbox,
+.stSelectbox > div {{
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+}}
+
+/* Control surface (applies both in sidebar and main area) */
+div[data-baseweb="select"] > div {{
+    background: linear-gradient(135deg, rgba(15, 23, 42, 0.9), rgba(30, 41, 59, 0.8)) !important;
+    border: 1px solid rgba(212, 175, 55, 0.6) !important;
+    border-radius: 12px !important;
+    min-height: var(--control-h-d) !important;
+    padding: 0 1rem !important;
+    display: flex !important;
+    align-items: center !important;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.20) !important;
+}}
+
+/* Text inside the control */
+div[data-baseweb="select"] > div, 
+div[data-baseweb="select"] input, 
+div[data-baseweb="select"] span {{
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    font-size: 1rem !important;
+}}
+
+/* Hover + focus states */
+div[data-baseweb="select"] > div:hover {{
+    border-color: var(--primary-gold) !important;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28) !important;
+}}
+
+div[data-baseweb="select"]:focus-within > div {{
+    border-color: var(--primary-gold) !important;
+    box-shadow: 0 0 0 3px rgba(212, 175, 55, 0.25) !important;
+    outline: none !important;
+}}
+
+/* Dropdown arrow */
+div[data-baseweb="select"] svg {{
+    fill: var(--primary-gold-light) !important;
+    color: var(--primary-gold-light) !important;
+    width: 18px !important;
+    height: 18px !important;
+    opacity: 0.85 !important;
+}}
+
+/* Dropdown menu */
+div[data-baseweb="select-dropdown"] {{
+    background: linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.9)) !important;
+    border: 1px solid var(--primary-gold) !important;
+    border-radius: 12px !important;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45) !important;
+    margin-top: 8px !important;
+}}
+
+/* Dropdown options */
+div[data-baseweb="select-dropdown"] div,
+div[data-baseweb="select-dropdown"] span {{
+    color: #ffffff !important;
+    background: transparent !important;
+    padding: 0.6rem 1rem !important;
+    font-weight: 500 !important;
+}}
+
+div[data-baseweb="select-dropdown"] div:hover {{
+    background: rgba(212, 175, 55, 0.15) !important;
+    color: var(--primary-gold-light) !important;
+}}
+
+/* Remove after/before decorations Streamlit adds */
+div[data-baseweb="select"] > div::after,
+div[data-baseweb="select"] > div::before {{
+    display: none !important;
+}}
+
+/* Modern category chip styling */
+.category-chip {{
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 1rem;
+    padding: 0.75rem 1.25rem;
+    background: linear-gradient(135deg, rgba(212, 175, 55, 0.2), rgba(184, 148, 31, 0.15));
+    border: 1px solid rgba(212, 175, 55, 0.4);
+    border-radius: 20px;
+    color: var(--primary-gold-light);
+    font-weight: 600;
+    font-size: 0.95rem;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 8px 24px rgba(212, 175, 55, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}}
+
+.category-chip:hover {{
+    background: linear-gradient(135deg, rgba(212, 175, 55, 0.3), rgba(184, 148, 31, 0.2));
+    transform: translateY(-2px);
+    box-shadow: 0 12px 32px rgba(212, 175, 55, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    border-color: var(--primary-gold);
+}}
+
+/* Enhanced label styling */
+.stSelectbox label,
+div[data-testid="stSelectbox"] label,
+.stSelectbox > label,
+section[data-testid="stSidebar"] label {{
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    font-size: 1rem !important;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3) !important;
+    margin-bottom: 0.35rem !important;
+    display: block !important;
+}}
+
+/* Special styling for sidebar labels */
+section[data-testid="stSidebar"] .stSelectbox label {{
+    color: var(--primary-gold-light) !important;
+    font-weight: 700 !important;
+}}
+
+/* Enhanced button styling - Force yellow buttons */
+.stButton > button, 
+.stButton button,
+button[kind="primary"],
+button[data-testid="baseButton-primary"] {{
+    background: linear-gradient(135deg, #d4af37, #b8941f) !important;
+    border: none !important;
+    border-radius: 14px !important;
+    color: #0f172a !important;
+    font-weight: 700 !important;
+    font-size: 1rem !important;
+    padding: 0.8rem 2rem !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    box-shadow: 0 4px 15px rgba(212, 175, 55, 0.3) !important;
+    min-height: 2.75rem !important;
+}}
+
+/* Bigger emoji buttons in sidebar (icon-only) */
+section[data-testid="stSidebar"] .stButton > button {{
+    font-size: 2rem !important;
+    width: 64px !important;
+    height: 64px !important;
+    padding: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    border-radius: 50% !important;
+    margin: 0 auto !important;
+    transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.25s ease !important;
+}}
+section[data-testid="stSidebar"] .stButton > button:hover {{
+    transform: scale(1.08) rotate(6deg);
+    box-shadow: 0 12px 24px rgba(212, 175, 55, 0.35), 0 0 0 3px rgba(212, 175, 55, 0.25) inset !important;
+}}
+section[data-testid="stSidebar"] .stButton > button:active {{
+    transform: scale(0.98) rotate(-2deg);
+}}
+/* Fix margins and column gaps for sidebar icon buttons - SYMMETRIC */
+section[data-testid="stSidebar"] .stButton {{
+    margin-bottom: var(--space-4) !important;
+    margin-top: 0 !important;
+}}
+section[data-testid="stSidebar"] div[data-testid="column"] {{
+    padding-left: 6px !important;
+    padding-right: 6px !important;
+    margin: 0 !important;
+}}
+/* Ensure equal spacing between columns */
+section[data-testid="stSidebar"] .row-widget {{
+    gap: 0 !important;
+}}
+section[data-testid="stSidebar"] div[data-testid="column"]:first-child {{
+    padding-right: 3px !important;
+}}
+section[data-testid="stSidebar"] div[data-testid="column"]:last-child {{
+    padding-left: 3px !important;
+}}
+
+.stButton > button:hover,
+.stButton button:hover,
+button[kind="primary"]:hover,
+button[data-testid="baseButton-primary"]:hover {{
+    transform: translateY(-2px) !important;
+    box-shadow: 0 8px 25px rgba(212, 175, 55, 0.4) !important;
+    background: linear-gradient(135deg, #f4e7a1, #d4af37) !important;
+    color: #0f172a !important;
+}}
+
+.stButton > button:active,
+.stButton button:active,
+button[kind="primary"]:active,
+button[data-testid="baseButton-primary"]:active {{
+    transform: translateY(0) !important;
+    background: linear-gradient(135deg, #f4e7a1, #d4af37) !important;
+    color: #0f172a !important;
+    box-shadow: 0 0 20px rgba(212, 175, 55, 0.8) !important;
+    animation: buttonPulse 0.3s ease-out !important;
+}}
+
+/* Button shine animation */
+@keyframes buttonPulse {{
+    0% {{ box-shadow: 0 0 5px rgba(212, 175, 55, 0.5); }}
+    50% {{ box-shadow: 0 0 25px rgba(212, 175, 55, 1), 0 0 35px rgba(244, 231, 161, 0.7); }}
+    100% {{ box-shadow: 0 0 15px rgba(212, 175, 55, 0.6); }}
+}}
+
+.stButton > button:focus,
+.stButton button:focus,
+button[kind="primary"]:focus,
+button[data-testid="baseButton-primary"]:focus {{
+    background: linear-gradient(135deg, #d4af37, #b8941f) !important;
+    color: #0f172a !important;
+    box-shadow: 0 0 0 3px rgba(212, 175, 55, 0.3) !important;
+}}
+
+/* Secondary button styling */
+.btn-secondary {{
+    background: linear-gradient(135deg, rgba(30, 41, 59, 0.8), rgba(15, 23, 42, 0.8)) !important;
+    border: 1px solid var(--glass-border) !important;
+    color: var(--text-primary) !important;
+}}
+
+.btn-secondary:hover {{
+    background: linear-gradient(135deg, rgba(30, 41, 59, 1), rgba(15, 23, 42, 1)) !important;
+    border-color: var(--primary-gold) !important;
+}}
+
+/* Sidebar styling */
+.css-1d391kg {{
+    background: var(--glass-bg) !important;
+    backdrop-filter: blur(20px) !important;
+    border-right: 1px solid var(--glass-border) !important;
+}}
+
+/* Sidebar styling with proper scrolling */
+section[data-testid="stSidebar"] {{
+    min-width: 300px !important;
+    max-width: 420px !important;
+    {'right: 0 !important; left: auto !important;' if ui_lang == 'ar' else 'left: 0 !important; right: auto !important;'}
+    position: static !important;
+    height: 100vh !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    padding-top: var(--space-5) !important;
+    background: linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.92)) !important;
+    border-right: 1px solid rgba(212, 175, 55, 0.25) !important;
+    transition: transform .28s ease, opacity .28s ease;
+    /* Ensure scrolling works */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(212, 175, 55, 0.8) rgba(15, 23, 42, 0.3);
+}}
+/* Collapsed state handled by body class */
+body.lexi-ltr.lexi-sb-collapsed section[data-testid=\"stSidebar\"] {{
+    transform: translateX(-110%) !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    width: 0px !important;
+    min-width: 0px !important;
+    max-width: 0px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    overflow: hidden !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}}
+body.lexi-rtl.lexi-sb-collapsed section[data-testid=\"stSidebar\"] {{
+    transform: translateX(110%) !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    width: 0px !important;
+    min-width: 0px !important;
+    max-width: 0px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    overflow: hidden !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}}
+/* Expanded state - ensure sidebar is visible */
+body.lexi-ltr:not(.lexi-sb-collapsed) section[data-testid=\"stSidebar\"],
+body.lexi-rtl:not(.lexi-sb-collapsed) section[data-testid=\"stSidebar\"] {{
+    transform: none !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    width: auto !important;
+    min-width: 300px !important;
+    max-width: 420px !important;
+    height: 100vh !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}}
+body.lexi-sb-collapsed .main .block-container {{
+    max-width: 1400px !important;
+    transition: max-width 0.3s ease !important;
+}}
+section[data-testid="stSidebar"] > div {{
+    background: transparent !important;
+    height: 100% !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+}}
+
+/* Enhanced scrollbar styling for sidebar */
+section[data-testid="stSidebar"]::-webkit-scrollbar {{
+    width: 10px !important;
+}}
+
+section[data-testid="stSidebar"]::-webkit-scrollbar-track {{
+    background: rgba(15, 23, 42, 0.6) !important;
+    border-radius: 6px !important;
+    margin: 4px 0 !important;
+}}
+
+section[data-testid="stSidebar"]::-webkit-scrollbar-thumb {{
+    background: linear-gradient(135deg, var(--primary-gold), var(--primary-gold-dark)) !important;
+    border-radius: 6px !important;
+    border: 1px solid rgba(15, 23, 42, 0.3) !important;
+    transition: all 0.3s ease !important;
+}}
+
+section[data-testid="stSidebar"]::-webkit-scrollbar-thumb:hover {{
+    background: linear-gradient(135deg, var(--primary-gold-light), var(--primary-gold)) !important;
+    box-shadow: 0 2px 8px rgba(212, 175, 55, 0.3) !important;
+}}
+
+section[data-testid="stSidebar"]::-webkit-scrollbar-corner {{
+    background: rgba(15, 23, 42, 0.6) !important;
+}}
+
+/* Sidebar type colors */
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] span,
+section[data-testid="stSidebar"] p,
+section[data-testid="stSidebar"] div {{
+    color: rgba(244, 247, 252, 0.92) !important;
+}}
+section[data-testid="stSidebar"] .stSelectbox label,
+section[data-testid="stSidebar"] .stCheckbox label {{
+    color: var(--primary-gold-light) !important;
+}}
+
+.sidebar .element-container {{
+    margin-bottom: 2rem !important;
+}}
+
+/* Fix sidebar select box spacing */
+section[data-testid="stSidebar"] .stSelectbox {{
+    margin-bottom: 1.5rem !important;
+}}
+
+section[data-testid="stSidebar"] .stSelectbox > div {{
+    margin-bottom: 0.5rem !important;
+}}
+
+/* Conversation history styling */
+.stButton[data-testid*="conv_"] button {{
+    background: rgba(30, 41, 59, 0.6) !important;
+    border: 1px solid rgba(212, 175, 55, 0.2) !important;
+    color: var(--text-secondary) !important;
+    text-align: left !important;
+    width: 100% !important;
+    margin-bottom: 0.5rem !important;
+    font-size: 0.85rem !important;
+    padding: 0.5rem 1rem !important;
+}}
+
+.stButton[data-testid*="conv_"] button:hover {{
+    background: rgba(212, 175, 55, 0.2) !important;
+    border-color: var(--primary-gold) !important;
+    color: var(--primary-gold-light) !important;
+}}
+
+/* Contact card */
+.contact-card {{
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1.5rem;
+    background: linear-gradient(135deg, rgba(212, 175, 55, 0.1), rgba(30, 41, 59, 0.5));
+    border: 1px solid var(--primary-gold);
+    border-radius: 16px;
+    margin-top: 2rem;
+    backdrop-filter: blur(10px);
+}}
+
+.contact-info {{
+    color: var(--text-secondary);
+    line-height: 1.6;
+}}
+
+.contact-name {{
+    font-weight: 700;
+    color: var(--primary-gold-light);
+    font-size: 1.1rem;
+    margin-bottom: 0.5rem;
+}}
+
+/* Responsive design */
+@media (max-width: 768px) {{
+    .main .block-container {{
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }}
+    
+    /* Let sidebar be narrower and lighter on mobile */
+    section[data-testid=\"stSidebar\"] {{
+        min-width: 270px !important;
+        max-width: 80vw !important;
+        position: fixed !important;
+        height: 100vh !important;
+        top: 0 !important;
+        left: 0 !important;
+        z-index: 1000 !important;
+        background: linear-gradient(135deg, rgba(15, 23, 42, 0.97), rgba(30, 41, 59, 0.95)) !important;
+    }}
+    /* In RTL, dock the sidebar to the right on mobile */
+    body.lexi-rtl section[data-testid=\"stSidebar\"] {{
+        left: auto !important;
+        right: 0 !important;
+    }}
+    
+    .glass-card {{
+        padding: 1rem;
+    }}
+    
+    .header-container {{
+        flex-direction: column;
+        text-align: center;
+        gap: 1rem;
+    }}
+    
+    .message-bubble {{
+        max-width: 95%;
+    }}
+    
+    div[data-baseweb="select"] > div {{
+        min-height: var(--control-h-m) !important;
+    }}
+    
+    .chat-container {{
+        max-height: 65vh !important;
+    }}
+}}
+
+/* Animations */
+@keyframes fadeInUp {{
+    from {{
+        opacity: 0;
+        transform: translateY(20px);
+    }}
+    to {{
+        opacity: 1;
+        transform: translateY(0);
+    }}
+}}
+
+@keyframes sheen-slide {{
+    0%   {{ background-position: -100% 0; opacity: 0.25; }}
+    50%  {{ background-position: 100% 0; opacity: 0.6; }}
+    100% {{ background-position: -100% 0; opacity: 0.25; }}
+}}
+
+@keyframes bubblePop {{
+    0%   {{ opacity: 0; transform: translateY(8px) scale(0.98); }}
+    60%  {{ opacity: 1; transform: translateY(0) scale(1.01); }}
+    100% {{ opacity: 1; transform: translateY(0) scale(1); }}
+}}
+
+.fade-in {{
+    animation: fadeInUp 0.35s ease-out both;
+}}
+
+
+/* Minimal hover polish */
+.message-bubble:hover {{
+    box-shadow: 0 12px 28px rgba(0,0,0,0.36);
+}}
+
+/* Respect user reduced motion preference */
+@media (prefers-reduced-motion: reduce) {{
+    .message-bubble {{ animation: none !important; }}
+    .fade-in {{ animation: none !important; }}
+    .glass-card::before {{ animation: none !important; }}
+}}
+
+/* Selection styling */
+::selection {{
+    background: rgba(212, 175, 55, 0.3);
+    color: var(--text-primary);
+}}
+
+/* Fix for Arabic text alignment */
+.rtl {{
+    direction: rtl !important;
+    text-align: right !important;
+    font-family: 'Tajawal', sans-serif !important;
+}}
+
+.ltr {{
+    direction: ltr !important;
+    text-align: left !important;
+}}
+
+/* Additional overrides for stubborn elements */
+* [data-testid="baseButton-primary"] {{
+    background: linear-gradient(135deg, #d4af37, #b8941f) !important;
+    color: #0f172a !important;
+}}
+
+/* Force all form submit buttons to be yellow */
+.stForm button {{
+    background: linear-gradient(135deg, #d4af37, #b8941f) !important;
+    color: #0f172a !important;
+    border: none !important;
+}}
+
+/* Comprehensive text color fixes with hierarchy */
+label, 
+.stSelectbox > label, 
+.stSelectbox label,
+.css-1d391kg label,
+.css-1d391kg span,
+.css-1d391kg p,
+.css-1d391kg div,
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] span,
+section[data-testid="stSidebar"] p,
+section[data-testid="stSidebar"] div,
+.stMarkdown,
+.stText,
+h1, h2, h3, h4, h5, h6 {{
+    color: #ffffff !important;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.6) !important;
+}}
+
+/* Special emphasis for important labels */
+section[data-testid="stSidebar"] .stSelectbox label,
+section[data-testid="stSidebar"] .stCheckbox label {{
+    color: var(--primary-gold-light) !important;
+    font-weight: 700 !important;
+    text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8) !important;
+}}
+
+/* Checkbox labels */
+.stCheckbox label {{
+    color: #ffffff !important;
+    font-weight: 500 !important;
+}}
+
+/* Fix text cursor visibility */
+.stTextArea textarea {{
+    caret-color: #f4e7a1 !important;
+    color: #f8fafc !important;
+}}
+
+.stTextArea textarea:focus {{
+    caret-color: #d4af37 !important;
+}}
+.intro-text {{
+    color: var(--text-secondary);
+    text-align: {('right' if ui_lang == 'ar' else 'left')};
+    direction: {('rtl' if ui_lang == 'ar' else 'ltr')};
+    font-size: var(--fs-xl);
+    line-height: 1.35;
+    letter-spacing: 0.15px;
+    margin: 0;
+    padding: 0.5rem 0.75rem;
+}}
+
+/* Message content text normalization */
+.message-content {{
+    margin: 0 !important;
+    padding: 0 !important;
+    text-indent: 0 !important;
+    text-align: left !important;
+    white-space: pre-wrap !important;
+}}
+
+/* Custom sidebar toggle + logo */
+button[data-testid="collapsedControl"] {{
+    display: none !important;
+}}
+
+    .lexi-toggle {{
+        position: fixed !important;
+        top: 16px !important;
+        left: 16px !important;
+        width: 48px !important;
+        height: 48px !important;
+        border-radius: 14px !important;
+        background: linear-gradient(135deg, #d4af37, #b8941f) !important;
+        color: #0f172a !important;
+        font-weight: 900 !important;
+        font-size: 22px !important;
+        line-height: 48px !important;
+        text-align: center !important;
+        cursor: pointer !important;
+        z-index: 999999 !important;
+        box-shadow: 0 10px 24px rgba(212,175,55,0.35), 0 0 0 2px rgba(255,255,255,0.1) !important;
+        user-select: none !important;
+        border: 2px solid rgba(15,23,42,0.8) !important;
+        transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        pointer-events: auto !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }}
+    .lexi-toggle::after {{
+        content: '' !important;
+        position: absolute !important;
+        inset: 0 !important;
+        border-radius: 14px !important;
+        background: radial-gradient(circle at 30% 20%, rgba(255,255,255,0.25), rgba(255,255,255,0)) !important;
+        pointer-events: none !important;
+    }}
+    .lexi-toggle:hover {{ 
+        transform: translateY(-2px) scale(1.08) !important; 
+        box-shadow: 0 16px 32px rgba(212,175,55,0.55), 0 0 0 3px rgba(255,255,255,0.15) !important;
+        background: linear-gradient(135deg, #f4e7a1, #d4af37) !important;
+    }}
+    .lexi-toggle:active {{
+        transform: translateY(0px) scale(1.02) !important;
+        box-shadow: 0 8px 20px rgba(212,175,55,0.4), 0 0 0 2px rgba(255,255,255,0.1) !important;
+    }}
+
+    /* Flip position for RTL */
+    body.lexi-rtl .lexi-toggle {{ left: auto; right: 16px; }}
+
+    .lexi-logo-badge {{
+        position: fixed;
+        left: 16px;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 64px;
+        height: 64px;
+        border-radius: 50%;
+        background: radial-gradient(circle at 30% 30%, rgba(212,175,55,0.25), rgba(30,41,59,0.95));
+        border: 1px solid rgba(212,175,55,0.6);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 9998;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.25s ease;
+        box-shadow: 0 10px 24px rgba(0,0,0,0.35);
+        animation: pulse-gold 3.6s ease-in-out infinite;
+    }}
+
+    /* Flip badge for RTL */
+    body.lexi-rtl .lexi-logo-badge {{ left: auto; right: 16px; }}
+
+@keyframes pulse-gold {{
+  0% {{ box-shadow: 0 0 0 0 rgba(212,175,55,0.35); }}
+  70% {{ box-shadow: 0 0 0 14px rgba(212,175,55,0.0); }}
+  100% {{ box-shadow: 0 0 0 0 rgba(212,175,55,0); }}
+}}
+
+body.lexi-sb-collapsed .lexi-logo-badge {{ opacity: 1; pointer-events: auto; }}
+body:not(.lexi-sb-collapsed) .lexi-logo-badge {{ opacity: 0; pointer-events: none; }}
+
+/* Badge polish */
+.lexi-logo-badge svg {{ filter: drop-shadow(0 2px 4px rgba(0,0,0,0.6)); }}
+@keyframes spin-slow {{ from {{ transform: rotate(0deg); }} to {{ transform: rotate(360deg); }} }}
+.lexi-logo-badge svg .ring {{ animation: spin-slow 18s linear infinite; transform-origin: 32px 32px; }}
+</style>
+"""     
+# ✅ ADD THIS LINE - Inject the CSS immediately
+st.markdown(get_css(st.session_state.ui_lang), unsafe_allow_html=True)
+
+# For compatibility with older Streamlit versions
+def rerun():
+    """Compatible rerun function for different Streamlit versions"""
+    try:
+        st.rerun()  # Newer versions
+    except AttributeError:
+        try:
+            st.experimental_rerun()  # Older versions
+        except AttributeError:
+            st.write("Please refresh the page manually")
+
+# Typing sound functionality
+def play_typing_sound(language):
+    """Play audible typing click sounds repeatedly during the typing indicator.
+    Uses WebAudio API and ensures the AudioContext is resumed on user gesture.
+    """
+    typing_sound_js = """
+    <script>
+    // Create (or reuse) a global audio context
+    window.__lexiAudioCtx = window.__lexiAudioCtx || new (window.AudioContext || window.webkitAudioContext)();
+
+    async function ensureAudio() {
+        try {
+            if (window.__lexiAudioCtx.state === 'suspended') {
+                await window.__lexiAudioCtx.resume();
+            }
+        } catch (e) {
+            console.log('Audio resume failed:', e);
+        }
+    }
+
+    function clickOnce() {
+        try {
+            const ctx = window.__lexiAudioCtx;
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            
+            osc.type = 'triangle';
+            osc.frequency.value = 1200; // crisp click frequency
+            gain.gain.value = 0.15; // audible volume
+            
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            
+            const now = ctx.currentTime;
+            gain.gain.setValueAtTime(0.15, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+            
+            osc.start(now);
+            osc.stop(now + 0.06);
+        } catch (e) {
+            console.log('Click sound failed:', e);
+        }
+    }
+
+    (async () => {
+        await ensureAudio();
+        // Play a short click every 120ms for about 3 seconds
+        let clickCount = 0;
+        const maxClicks = 25;
+        const interval = setInterval(() => {
+            clickOnce();
+            clickCount++;
+            if (clickCount >= maxClicks) {
+                clearInterval(interval);
+            }
+        }, 120);
+    })();
+    </script>
+    """
+    return typing_sound_js
+
+# Conversation history management (with file persistence)
+DATA_DIR = Path("data")
+CONV_FILE = DATA_DIR / "conversations.json"
+
+def _ensure_data_dir():
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+def _save_history_to_file():
+    _ensure_data_dir()
+    try:
+        with open(CONV_FILE, "w", encoding="utf-8") as f:
+            json.dump(st.session_state.conversation_history, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def _load_history_from_file():
+    try:
+        if CONV_FILE.exists():
+            with open(CONV_FILE, "r", encoding="utf-8") as f:
+                st.session_state.conversation_history = json.load(f)
+    except Exception:
+        pass
+
+# Initial load from disk (once)
+if not st.session_state.get("_history_loaded", False):
+    _load_history_from_file()
+    st.session_state._history_loaded = True
+
+
+def save_conversation():
+    """Save current conversation to history and persist to disk"""
+    if st.session_state.chat and len(st.session_state.chat) > 0:
+        # Get first user message as title
+        title = "Nouvelle conversation"
+        for msg in st.session_state.chat:
+            if msg["role"] == "user" and msg["text"].strip():
+                # Clean the text and take first meaningful part
+                clean_text = msg["text"].strip()
+                if len(clean_text) > 30:
+                    title = clean_text[:30] + "..."
+                else:
+                    title = clean_text
+                break
+        
+        conversation = {
+            "id": int(time.time()*1000),
+            "title": title,
+            "messages": st.session_state.chat.copy(),
+              # Remplace la ligne du timestamp par celle-ci (qui utilise le module time que tu as déjà) :
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+            "lang": st.session_state.ui_lang
+        }
+        
+        st.session_state.conversation_history.insert(0, conversation)
+        # Keep only last 50 conversations
+        if len(st.session_state.conversation_history) > 50:
+            st.session_state.conversation_history = st.session_state.conversation_history[:50]
+        _save_history_to_file()
+        st.session_state.unsaved_changes = False
+        st.session_state.auto_saved = True
+
+
+def load_conversation(conv_id):
+    """Load a conversation from history"""
+    for conv in st.session_state.conversation_history:
+        if conv["id"] == conv_id:
+            st.session_state.chat = conv["messages"].copy()
+            st.session_state.current_conversation_id = conv_id
+            break
+
+def start_new_conversation(save_before=True):
+    """Start a new conversation"""
+    if save_before and st.session_state.chat:
+        save_conversation()
+    st.session_state.chat = []
+    st.session_state.current_conversation_id = None
+    st.session_state.unsaved_changes = False
+
+API_URL = "http://backend:8000"
+MODEL_DEFAULT = "lexi-o3"
+
+# Model mapping
+MODEL_MAPPING = {
+    "lexi-o1": "phi3:mini",
+    "lexi-o2": "llama3:instruct", 
+    "lexi-o3": "mistral:instruct"
+}
+
+# Enhanced avatars with better design
+LEXIBOT_AVATAR = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHZpZXdCb3g9IjAgMCA2MCA2MCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGRlZnM+CjxsaW5lYXJHcmFkaWVudCBpZD0iZ3JhZDEiIHgxPSIwJSIgeTE9IjAlIiB4Mj0iMTAwJSIgeTI9IjEwMCUiPgo8c3RvcCBvZmZzZXQ9IjAlIiBzdHlsZT0ic3RvcC1jb2xvcjojZGFiNjE3O3N0b3Atb3BhY2l0eToxIiAvPgo8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0eWxlPSJzdG9wLWNvbG9yOiNmZGQ4MzU7c3RvcC1vcGFjaXR5OjEiIC8+CjwvbGluZWFyR3JhZGllbnQ+CjwvZGVmcz4KPGNpcmNsZSBjeD0iMzAiIGN5PSIzMCIgcj0iMzAiIGZpbGw9InVybCgjZ3JhZDEpIi8+CjxjaXJjbGUgY3g9IjMwIiBjeT0iMjQiIHI9IjE4IiBmaWxsPSIjZmZmZmZmIiBvcGFjaXR5PSIwLjkiLz4KPGNpcmNsZSBjeD0iMjQiIGN5PSIyMCIgcj0iMyIgZmlsbD0iIzFmMjkzNyIvPgo8Y2lyY2xlIGN4PSIzNiIgY3k9IjIwIiByPSIzIiBmaWxsPSIjMWYyOTM3Ii8+CjxwYXRoIGQ9Ik0yNCAzMEMyNCAzMCAyNyAzNCAzNiAzMEMzNiAzMCAzMyAyOCAzMCAyOEMyNyAyOCAyNCAzMCAyNCAzMFoiIGZpbGw9IiMxZjI5MzciLz4KPHBhdGggZD0iTTIwIDQ0QzIwIDQ0IDI1IDQ4IDQwIDQ0QzQwIDQ0IDM1IDQyIDMwIDQyQzI1IDQyIDIwIDQ0IDIwIDQ0WiIgZmlsbD0iIzFmMjkzNyIgb3BhY2l0eT0iMC42Ii8+Cjwvc3ZnPgo="
+
+# Professional user avatar - distinct from bot avatar
+USER_AVATAR = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0nNjAnIGhlaWdodD0nNjAnIHZpZXdCb3g9JzAgMCA2MCA2MCcgeG1sbnM9J2h0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnJz48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9J3VzZXJHcmFkJyB4MT0nMCUnIHkxPScwJScgeDI9JzEwMCUnIHkyPScxMDAlJz48c3RvcCBvZmZzZXQ9JzAlJyBzdHlsZT0nc3RvcC1jb2xvcjojMGY5ZTZiO3N0b3Atb3BhY2l0eToxJy8+PHN0b3Agb2Zmc2V0PScxMDAlJyBzdHlsZT0nc3RvcC1jb2xvcjojMTBiOTgxO3N0b3Atb3BhY2l0eToxJy8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PGNpcmNsZSBjeD0iMzAiIGN5PSIzMCIgcj0iMzAiIGZpbGw9J3VybCgjdXNlckdyYWQpJy8+PGNpcmNsZSBjeD0iMzAiIGN5PSIzMCIgcj0iMjcnIGZpbGw9JyNmZmYnLz48Y2lyY2xlIGN4PSIzMCcgY3k9IjIyJyByPSI4JyBmaWxsPSIjMzc0MTUxJy8+PHBhdGggZD0nTTE0IDQ1IGMwIC0xMCA3IC0xNSAxNiAtMTUgOSAwIDE2IDUgMTYgMTUnIGZpbGw9JyMzNzQxNTEnLz48Y2lyY2xlIGN4PSIzMCcgY3k9IjIyJyByPSI2JyBmaWxsPSIjZjNmNGY2Jy8+PGNpcmNsZSBjeD0iMjYnIGN5PScyMCcgcj0nMScgZmlsbD0nIzM3NDE1MScvPjxjaXJjbGUgY3g9JzM0JyBjeT0nMjAnIHI9JzEnIGZpbGw9JyMzNzQxNTEnLz48cGF0aCBkPSdNMjcgMjRjMS41IDEgMy41IDEgNSAwJyBzdHJva2U9JyMzNzQxNTEnIHN0cm9rZS13aWR0aD0nMScgZmlsbD0nbm9uZScvPjwvc3ZnPg=="
+
+# ---------- MULTI-LANGUAGE TEXTS ----------
+texts = {
+    "title": {
+        "fr": "Lexibot - Assistant Juridique IA",
+        "en": "Lexibot - AI Legal Assistant", 
+        "ar": "ليكسيبوت - مساعد قانوني ذكي"
+    },
+    "sign_in": {
+        "fr": "Se connecter",
+        "en": "Sign In",
+        "ar": "تسجيل الدخول"
+    },
+    "sign_up": {
+        "fr": "Nouveau client",
+        "en": "Sign Up",
+        "ar": "عميل جديد"
+    },
+    "client_access": {
+        "fr": " Accès Client",
+        "en": " Client Access",
+        "ar": " دخول العميل"
+    },
+    "email_label": {
+        "fr": " Email",
+        "en": " Email",
+        "ar": " البريد الإلكتروني"
+    },
+    "password_label": {
+        "fr": " Mot de passe",
+        "en": " Password",
+        "ar": " كلمة المرور"
+    },
+    "login_btn": {
+        "fr": " Se connecter",
+        "en": " Sign In",
+        "ar": " تسجيل الدخول"
+    },
+    "create_account": {
+        "fr": "**Créer un compte client**",
+        "en": "**Create Client Account**",
+        "ar": "**إنشاء حساب عميل**"
+    },
+    "first_name": {
+        "fr": " Prénom",
+        "en": " First Name",
+        "ar": " الاسم الأول"
+    },
+    "last_name": {
+        "fr": " Nom",
+        "en": " Last Name",
+        "ar": " اسم العائلة"
+    },
+    "phone": {
+        "fr": " Téléphone",
+        "en": " Phone",
+        "ar": " الهاتف"
+    },
+    "confirm_password": {
+        "fr": " Confirmer le mot de passe",
+        "en": " Confirm Password",
+        "ar": " تأكيد كلمة المرور"
+    },
+    "create_account_btn": {
+        "fr": " Créer mon compte",
+        "en": " Create Account",
+        "ar": " إنشاء حسابي"
+    },
+    "hello": {
+    "fr": "Bonjour",
+    "en": "Hello",
+    "ar": "مرحباً"
+    },
+    "logout": {
+        "fr": "Déconnexion",
+        "en": "Logout",
+        "ar": "تسجيل خروج"
+    },
+    "intro": {
+        "fr": "Bienvenue sur Lexibot, votre assistant juridique tunisien .\n\nPosez votre question en français, anglais ou arabe.\n\nLexibot ne remplace pas un avocat.",
+        "en": "Welcome to Lexibot, your Tunisian legal assistant .\n\nAsk in French, English or Arabic.\n\nLexibot does not replace a lawyer.",
+        "ar": "مرحباً بكم في ليكسوبات، مساعدك القانوني التونسي .\n\nاكتب سؤالك بالعربية أو الفرنسية أو الإنجليزية.\n\nليكسوبات لا يحل محل المحامي."
+    },
+    "placeholder": {"fr": "Écrivez votre question juridique ici... (Ctrl+Entrée pour envoyer)", "en": "Type your legal question here... (Ctrl+Enter to send)", "ar": "اكتب سؤالك القانوني هنا... (Ctrl+Enter للإرسال)"},
+    "send": {"fr": "Envoyer", "en": "Send", "ar": "إرسال"},
+    "clear": {"fr": "Effacer", "en": "Clear", "ar": "مسح"},
+    "export": {"fr": "Exporter", "en": "Export", "ar": "تصدير"},
+    "category_label": {"fr": "Catégorie", "en": "Category", "ar": "التصنيف"},
+    "warning": {"fr": "Veillez entrer une question.", "en": "Please enter a question.", "ar": "يرجى إدخال سؤال."},
+    "typing": {"fr": "Lexibot écrit...", "en": "Lexibot is typing...", "ar": "ليكسوبات يكتب..."},
+    "auto_lang": {"fr": "Détection automatique de la langue", "en": "Auto-detect language", "ar": "اكتشاف اللغة تلقائياً"},
+    "detected_note": {
+        "fr": "Langue détectée: {lang}",
+        "en": "Detected language: {lang}",
+        "ar": "اللغة المكتشفة: {lang}"
+    },
+    "foot_contact": {
+        "fr": "Maître Hila Ben Arbia • +216 96 762 574\nSousse, Av. de la République",
+        "en": "Ms Hila Ben Arbia • +216 96 762 574\nSousse, Av. de la République",
+        "ar": "الأستاذة هيلة بن عربية • ‎+216 96 762 574\nسوسة، شارع الجمهورية"
+    },
+    "save_conv": {"fr": "💾 Enregistrer la conversation", "en": "💾 Save conversation", "ar": "💾 حفظ المحادثة"},
+    "end_session": {"fr": "🚪 Terminer la session (enregistrer)", "en": "🚪 End session (save)", "ar": "🚪 إنهاء الجلسة (حفظ)"},
+    "new_conv": {"fr": "🆕 Nouvelle Conversation", "en": "🆕 New Conversation", "ar": "🆕 محادثة جديدة"},
+    "recent_convs": {"fr": "📚 Conversations Récentes", "en": "📚 Recent Conversations", "ar": "📚 المحادثات الأخيرة"},
+    "model_label": {"fr": "🤖 Modèle", "en": "🤖 Model", "ar": "🤖 النموذج"},
+    "model_help": {"fr": "Choisissez le modèle IA pour les réponses", "en": "Choose the AI model for responses", "ar": "اختر نموذج الذكاء الاصطناعي للإجابات"},
+}
+
+categories = {
+    "fr": ["Général", "Droit du travail", "Droit de la famille", "Droit commercial", "Droit pénal", "Droit des successions", "Autre"],
+    "en": ["General", "Labor law", "Family law", "Commercial law", "Criminal law", "Inheritance law", "Other"],
+    "ar": ["عام", "قانون العمل", "قانون الأسرة", "القانون التجاري", "القانون الجنائي", "قانون المواريث", "أخرى"]
+}
+
+lang_names = {"fr": "Français", "en": "English", "ar": "العربية"}
+lang_flags = {"fr": "🇫🇷", "en": "🇬🇧", "ar": "🇹🇳"}
+
+
+
+# ---------- AUTO-LOGIN & CLIENT AUTH ----------
+def auto_login_from_storage():
+    """Restore JWT from browser localStorage into session and validate it.
+    Uses a safe URL param bridge to communicate the token from JS to Python, then cleans the URL.
+    """
+    try:
+        # Step 1: If no token in session, ask JS to expose localStorage token in URL temporarily
+        if not st.session_state.get("jwt_token"):
+            components.html(
+                """
+                <script>
+                (function(){
+                  try {
+                    const t = window.parent.localStorage.getItem('lexibot_token');
+                    if (t) {
+                      const url = new URL(window.parent.location.href);
+                      if (url.searchParams.get('lexi_token') !== t) {
+                        url.searchParams.set('lexi_token', t);
+                        window.parent.history.replaceState({}, '', url.toString());
+                      }
+                    }
+                  } catch(e) {}
+                })();
+                </script>
+                """,
+                height=0
+            )
+
+        # Step 2: Python reads the token from query params
+        params = st.experimental_get_query_params()
+        token_param = params.get('lexi_token', [None])[0]
+        if token_param and not st.session_state.get("jwt_token"):
+            # Validate token by calling protected endpoint
+            try:
+                resp = requests.get(
+                    f"{API_BASE_URL}/users/me",
+                    headers={"Authorization": f"Bearer {token_param}"},
+                    timeout=5
+                )
+                if resp.status_code == 200:
+                    st.session_state.jwt_token = token_param
+                    st.session_state.user_info = resp.json()
+                else:
+                    # Invalid token: clear from browser storage
+                    components.html(
+                        """
+                        <script>
+                        try { window.parent.localStorage.removeItem('lexibot_token'); } catch(e) {}
+                        </script>
+                        """,
+                        height=0
+                    )
+            except Exception:
+                pass
+
+        # Step 3: Clean URL to remove any token traces
+        if token_param:
+            components.html(
+                """
+                <script>
+                (function(){
+                  try {
+                    const url = new URL(window.parent.location.href);
+                    url.searchParams.delete('lexi_token');
+                    window.parent.history.replaceState({}, '', url.toString());
+                  } catch(e) {}
+                })();
+                </script>
+                """,
+                height=0
+            )
+    except Exception:
+        # Silent fail: do not break UI if auto-restore fails
+        pass
+
+def show_client_auth():
+    """Clean multilingual client authentication interface"""
+    current_token = st.session_state.get("jwt_token", "")
+    user_info = st.session_state.get("user_info", {})
+
+    # --- If user already logged in ---
+    # --- Si l'utilisateur est déjà connecté ---
+    if current_token and user_info:
+        # Récupération sécurisée des textes (évite le KeyError)
+        hello_txt = texts.get("hello", {}).get(st.session_state.ui_lang, "Bonjour")
+        logout_txt = texts.get("logout", {}).get(st.session_state.ui_lang, "Déconnexion")
+        first_name = user_info.get('first_name', 'Client')
+
+        st.success(f"👋 {hello_txt} {first_name}")
+        
+        col1, col2 = st.columns([3, 1])
+        with col2:
+            if st.button("🚪 " + logout_txt, type="secondary"):
+                st.session_state.jwt_token = ""
+                st.session_state.user_info = {}
+                # Nettoyage du localStorage
+                st.markdown(
+                    "<script>try { localStorage.removeItem('lexibot_token'); } catch(e) {}</script>",
+                    unsafe_allow_html=True
+                )
+                st.rerun()
+        return True
+
+    # --- Login/Register Tabs ---
+    st.markdown(f"### {texts['client_access'][st.session_state.ui_lang]}")
+    tab1, tab2 = st.tabs([
+        texts["sign_in"][st.session_state.ui_lang],
+        texts["sign_up"][st.session_state.ui_lang]
+    ])
+
+    # --- LOGIN ---
+    with tab1:
+        with st.form("client_login"):
+            # Safe .get() to avoid KeyErrors
+            email_label = texts.get("email_label", {"en":"Email"}).get(st.session_state.ui_lang, "Email")
+            password_label = texts.get("password_label", {"en":"Password"}).get(st.session_state.ui_lang, "Password")
+            login_button_text = texts.get("login_btn", {"en":"Login"}).get(st.session_state.ui_lang, "Login")
+            login_success_text = texts.get("login_success", {"en":"Login successful"}).get(st.session_state.ui_lang, "Login successful")
+
+            email = st.text_input(email_label)
+            password = st.text_input(password_label, type="password")
+            login_btn = st.form_submit_button(login_button_text, use_container_width=True)
+
+            if login_btn and email and password:
+                success, result = authenticate_client(email, password)
+                if success:
+                    st.session_state.jwt_token = result.get("token")
+                    st.session_state.user_info = result.get("user", {})
+
+                    # Save token in localStorage safely
+                    token = st.session_state.jwt_token or ""
+                    st.markdown(f"""
+                    <script>
+                    try {{ localStorage.setItem('lexibot_token', '{token}'); }} catch(e) {{}}
+                    </script>
+                    """, unsafe_allow_html=True)
+
+                    st.success("✅ " + login_success_text)
+                    st.rerun()
+                else:
+                    st.error("❌ " + str(result))
+
+    # --- REGISTER ---
+    with tab2:
+        with st.form("client_register"):
+            # Safe .get() for all labels
+            create_account_text = texts.get("create_account", {"en":"Create an account"}).get(st.session_state.ui_lang, "Create an account")
+            first_name_label = texts.get("first_name", {"en":"First Name"}).get(st.session_state.ui_lang, "First Name")
+            last_name_label = texts.get("last_name", {"en":"Last Name"}).get(st.session_state.ui_lang, "Last Name")
+            email_label = texts.get("email_label", {"en":"Email"}).get(st.session_state.ui_lang, "Email")
+            phone_label = texts.get("phone", {"en":"Phone"}).get(st.session_state.ui_lang, "Phone")
+            password_label = texts.get("password_label", {"en":"Password"}).get(st.session_state.ui_lang, "Password")
+            create_account_btn_text = texts.get("create_account_btn", {"en":"Register"}).get(st.session_state.ui_lang, "Register")
+            password_too_short_text = texts.get("password_too_short", {"en":"Password too short"}).get(st.session_state.ui_lang, "Password too short")
+            missing_fields_text = texts.get("missing_fields", {"en":"Missing fields"}).get(st.session_state.ui_lang, "Missing fields")
+            register_success_text = texts.get("register_success", {"en":"Registration successful"}).get(st.session_state.ui_lang, "Registration successful")
+
+            st.markdown(create_account_text)
+            first_name = st.text_input(first_name_label)
+            last_name = st.text_input(last_name_label)
+            email = st.text_input(email_label)
+            phone = st.text_input(phone_label, placeholder="+216 XX XXX XXX")
+            password = st.text_input(password_label, type="password")
+
+            register_btn = st.form_submit_button(create_account_btn_text, use_container_width=True)
+
+            if register_btn:
+                if len(password) < 6:
+                    st.error("❌ " + password_too_short_text)
+                elif not all([first_name, last_name, email]):
+                    st.error("❌ " + missing_fields_text)
+                else:
+                    success, result = register_client(first_name, last_name, email, phone, password)
+                    if success:
+                        st.success("✅ " + register_success_text)
+                    else:
+                        st.error("❌ " + str(result))
+    
+    return False
+
+    # --- Custom CSS ---
+    st.markdown(f"""
+    <style>
+    .stTabs [data-baseweb="tab-list"] {{
+        gap: 15px;
+        margin-bottom: 25px;
+        justify-content: center !important;
+        display: flex !important;
+        align-items: center !important;
+    }}
+    .stTabs [data-baseweb="tab"] {{
+        background-color: #d4af37 !important;
+        color: #1f2937 !important;
+        border-radius: 25px !important;
+        padding: 8px 16px !important;
+        font-weight: 600 !important;
+        border: none !important;
+        font-size: 12px !important;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+        min-width: 100px !important;
+        text-align: center !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+    }}
+    .stTabs [aria-selected="true"] {{
+        background-color: #b8941f !important;
+    }}
+    .stButton > button {{
+        background-color: #d4af37 !important;
+        color: #1f2937 !important;
+        border: none !important;
+        border-radius: 25px !important;
+        font-weight: bold !important;
+        padding: 8px 20px !important;
+        font-size: 13px !important;
+        width: 100% !important;
+    }}
+    .stButton > button:hover {{
+        background-color: #b8941f !important;
+    }}
+    .stTextInput > div > div > input {{
+        margin-bottom: 10px !important;
+        font-size: 14px !important;
+    }}
+    /* RTL support if Arabic */
+    body {{
+        direction: {"rtl" if st.session_state.ui_lang == "ar" else "ltr"};
+        text-align: {"right" if st.session_state.ui_lang == "ar" else "left"};
+        font-family: {"Cairo, sans-serif" if st.session_state.ui_lang == "ar" else "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"};
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+
+def authenticate_client(email, password):
+    """Authenticate client and return token + user info"""
+    try:
+        import requests
+        # On passe un dictionnaire à 'data', requests s'occupe du Content-Type
+        login_data = {
+            "username": email,
+            "password": password
+        }
+        
+        response = requests.post(
+            f"{API_BASE_URL}/auth/jwt/login",
+            data=login_data,
+            timeout=10
+        )
+
+        if response.status_code == 200:
+            token = response.json()["access_token"]
+            
+            # Récupération des infos de l'utilisateur (le /me)
+            user_response = requests.get(
+                f"{API_BASE_URL}/users/me",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=5
+            )
+            
+            if user_response.status_code == 200:
+                user_info = user_response.json()
+                return True, {"token": token, "user": user_info}
+            else:
+                return False, "Session établie, mais profil introuvable."
+        
+        elif response.status_code == 400:
+            return False, "Email ou mot de passe incorrect."
+        else:
+            return False, f"Erreur serveur ({response.status_code})"
+            
+    except Exception as e:
+        return False, f"Erreur de connexion : {str(e)}"
+
+def register_client(first_name, last_name, email, phone, password):
+    """Register new client for Lexibot"""
+    try:
+        import requests
+        
+        # Données structurées pour ton schéma UserCreate (pydantic)
+        register_data = {
+            "email": email,
+            "password": password,
+            "is_active": True,
+            "is_superuser": False,
+            "is_verified": False,
+            "first_name": first_name,
+            "last_name": last_name,
+            "phone": phone,
+            "preferred_language": "fr"
+        }
+
+        response = requests.post(
+            f"{API_BASE_URL}/auth/register",
+            json=register_data,
+            timeout=10
+        )
+
+        if response.status_code == 201:
+            return True, "Compte créé avec succès ! Connectez-vous maintenant."
+        
+        elif response.status_code == 400:
+            detail = response.json().get("detail", "")
+            if "REGISTER_USER_ALREADY_EXISTS" in str(detail):
+                return False, "Cet email est déjà enregistré au cabinet."
+            return False, f"Données invalides : {detail}"
+        else:
+            return False, f"Erreur ({response.status_code}): {response.text}"
+
+    except Exception as e:
+        return False, f"Impossible de joindre le backend : {str(e)}"
+
+# ---------- SIDEBAR LAYOUT ----------
+with st.sidebar:
+    lang = st.session_state.ui_lang
+
+    st.markdown(f"""
+        <style>
+            .lexibot-header {{
+                text-align: center;
+                margin-bottom: 2rem;
+            }}
+            .lexibot-logo {{
+                width: 60px;
+                height: 60px;
+                border-radius: 50%;
+                background: linear-gradient(135deg, #d4af37, #ffd700);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 28px;
+                color: #1f2937;
+                margin: 0 auto 0.8rem auto;
+                box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            }}
+            .lexibot-title {{
+                font-size: 2.2rem;
+                font-weight: 700;
+                background: linear-gradient(90deg, #d4af37, #ffd700);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                margin-bottom: 0.4rem;
+            }}
+            .lexibot-subtitle {{
+                color: rgba(255,255,255,0.75);
+                font-size: 1rem;
+                margin: 0;
+            }}
+            /* Arabic RTL support */
+            .rtl {{
+                direction: rtl;
+                text-align: center;
+                font-family: 'Cairo', sans-serif;
+            }}
+            /* Subtle fade-in */
+            .fade-in {{
+                animation: fadeIn 1.2s ease-in-out;
+            }}
+            @keyframes fadeIn {{
+                from {{ opacity: 0; transform: translateY(-10px); }}
+                to {{ opacity: 1; transform: translateY(0); }}
+            }}
+        </style>
+
+        <div class="lexibot-header fade-in {'rtl' if lang == 'ar' else ''}">
+            <div class="lexibot-logo">⚖️</div>
+            <h2 class="lexibot-title">LexiBot</h2>
+            <p class="lexibot-subtitle">
+                {"Cabinet Hila Ben Arbia" if lang != "ar" else "مكتب هيلة بن عريبة"}
+            </p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Language selector with proper labels
+    st.markdown(
+        "<p style='color: white; margin-bottom: 0.5rem; text-align: center;'>🌐 Langue / Language / اللغة</p>",
+        unsafe_allow_html=True
+    )
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("FR", use_container_width=True, key="lang_fr", help="Français"):
+            st.session_state.ui_lang = 'fr'
+            st.rerun()
+    with col2:
+        if st.button("EN", use_container_width=True, key="lang_en", help="English"):
+            st.session_state.ui_lang = 'en'
+            st.rerun()
+    with col3:
+        if st.button("AR", use_container_width=True, key="lang_ar", help="العربية"):
+            st.session_state.ui_lang = 'ar'
+            st.rerun()
+
+
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+    
+
+
+
+# ============================
+# 🔐 AUTH FUNCTIONS
+# ============================
+
+# ============================
+# 🔐 AUTHENTICATION FUNCTIONS
+# ============================
+
+def register_client(first_name, last_name, email, phone, password):
+    """Register a new client for Lexibot"""
+    try:
+        # Données structurées pour le schéma UserCreate de FastAPI-Users
+        register_data = {
+            "email": email,
+            "password": password,
+            "is_active": True,
+            "is_superuser": False,
+            "is_verified": False,
+            "first_name": first_name,
+            "last_name": last_name,
+            "phone": phone,
+            "preferred_language": "fr"
+        }
+        
+        response = requests.post(
+            f"{API_BASE_URL}/auth/register",  # Route définie dans app.include_router(fastapi_users.get_register_router...)
+            json=register_data,
+            timeout=10
+        )
+        
+        # FastAPI-Users renvoie 201 Created
+        if response.status_code == 201:
+            return True, "Compte créé avec succès ! Connectez-vous."
+        else:
+            try:
+                error_detail = response.json().get("detail", response.text)
+            except:
+                error_detail = response.text
+            return False, f"Erreur: {error_detail}"
+    except Exception as e:
+        return False, f"Connexion impossible : {str(e)}"
+
+
+def authenticate_client(email, password):
+    """Authenticate client and get JWT token"""
+    try:
+        # FastAPI-Users / OAuth2 attend du form-data (data=)
+        response = requests.post(
+            f"{API_BASE_URL}/auth/jwt/login", # Route définie dans prefix="/auth/jwt"
+            data={"username": email, "password": password},
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            # On récupère aussi les infos de l'utilisateur pour le profil
+            token = data["access_token"]
+            user_res = requests.get(
+                f"{API_BASE_URL}/users/me",
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            if user_res.status_code == 200:
+                return True, {"token": token, "user": user_res.json()}
+            return True, {"token": token, "user": {}}
+        else:
+            return False, "Email ou mot de passe incorrect"
+    except Exception as e:
+        return False, f"Erreur: {str(e)}"
+
+
+# ============================
+# 📅 APPOINTMENT FUNCTIONS
+# ============================
+
+def request_appointment(subject, preferred_date, preferred_time, description):
+    """Request an appointment"""
+    try:
+        jwt_token = st.session_state.get("jwt_token", "")
+        if not jwt_token:
+            return False, "Veuillez vous connecter"
+        
+        # Formatage de la date en ISO (FastAPI préfère ça)
+        # preferred_date est un objet dt.date, on le combine avec l'heure
+        datetime_str = f"{preferred_date}T{preferred_time}:00"
+        
+        appointment_data = {
+            "subject": subject,
+            "preferred_date": datetime_str,
+            "description": description or ""
+        }
+        
+        response = requests.post(
+            f"{API_BASE_URL}/appointments/request",
+            json=appointment_data,
+            headers={"Authorization": f"Bearer {jwt_token}"},
+            timeout=10
+        )
+        
+        if response.status_code in [200, 201]:
+            return True, "Rendez-vous demandé avec succès"
+        else:
+            return False, f"Erreur: {response.text}"
+    except Exception as e:
+        return False, f"Erreur: {str(e)}"
+
+
+def get_user_appointments():
+    """Get user's appointments"""
+    try:
+        jwt_token = st.session_state.get("jwt_token", "")
+        if not jwt_token:
+            return []
+        
+        response = requests.get(
+            f"{API_BASE_URL}/appointments/my",
+            headers={"Authorization": f"Bearer {jwt_token}"},
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return []
+    except Exception:
+        return []
+
+
+# ============================
+# 🌐 AUTHENTICATION + UI SECTION
+# ============================
+
+# --- Authentication section ---
+show_client_auth()
+
+# --- Additional options for logged in users ---
+if st.session_state.get("jwt_token"):
+    # Show admin link if admin
+    if st.session_state.get("user_info", {}).get("is_superuser"):
+        st.markdown("---")
+        st.markdown("### Admin")
+        if st.button("🛠️ Admin Panel"):
+            st.switch_page("pages/admin.py")
+    
+    st.markdown("---")
+    st.markdown("### Aide")
+    st.markdown("""
+    - 📞 Contact: contact@lexibot.com  
+    - 🔒 Vos données sont sécurisées  
+    - ℹ️ [En savoir plus](https://lexibot.com)
+    """)
+
+    # --- Appointment booking section ---
+    st.markdown("### 📅 Prendre Rendez-vous")
+    
+    with st.form("appointment_request"):
+        st.markdown("**Demander un rendez-vous**")
+        subject = st.selectbox(
+            "Sujet de consultation",
+            [
+                "Droit du travail", "Droit de la famille", "Droit commercial",
+                "Droit pénal", "Droit civil", "Autre"
+            ]
+        )
+        
+        # Date selection (next 30 days, excluding weekends)
+        today = dt.date.today()
+        available_dates = []
+        for i in range(1, 31):  # Next 30 days
+            date = today + dt.timedelta(days=i)
+            if date.weekday() < 5:  # Monday to Friday only
+                available_dates.append(date)
+        
+        preferred_date = st.selectbox(
+            "Date souhaitée",
+            available_dates,
+            format_func=lambda x: x.strftime("%A %d %B %Y")
+        )
+        
+        preferred_time = st.selectbox(
+            "Heure souhaitée",
+            ["09:00", "10:00", "11:00", "14:00", "15:00", "16:00", "17:00"]
+        )
+        
+        description = st.text_area(
+            "Description (optionnel)",
+            placeholder="Décrivez brièvement votre situation...",
+            max_chars=500
+        )
+        
+        submit_appointment = st.form_submit_button("📅 Demander le rendez-vous", use_container_width=True)
+        
+        if submit_appointment:
+            success, result = request_appointment(subject, preferred_date.isoformat(), preferred_time, description)
+            if success:
+                st.success("✅ Demande envoyée! Vous recevrez une confirmation par email.")
+            else:
+                st.error(f"❌ {result}")
+    
+    # --- Show user's appointments ---
+    st.markdown("### 📋 Mes Rendez-vous")
+    try:
+        user_appointments = get_user_appointments()
+        if user_appointments:
+            for apt in user_appointments:
+                status_icon = {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(apt["status"], "❓")
+                st.markdown(f"""
+                **{status_icon} {apt['subject']}**  
+                📅 {apt['preferred_date']} à {apt.get('preferred_time', 'N/A')}  
+                Status: {apt['status']}
+                """)
+        else:
+            st.info("Aucun rendez-vous pour le moment")
+    except Exception:
+        st.info("Aucun rendez-vous pour le moment")
+
+
+# Floating sidebar toggle and dynamic logo
+# Localize toggle and logo titles
+_toggle_titles = { 'fr': 'Afficher/Masquer la barre latérale', 'en': 'Show/Hide sidebar', 'ar': 'إظهار/إخفاء الشريط الجانبي' }
+_logo_titles = { 'fr': 'Ouvrir le menu Lexibot', 'en': 'Open Lexibot menu', 'ar': 'فتح قائمة ليكسيبوت' }
+_toggle_title = _toggle_titles.get(st.session_state.ui_lang, 'Show/Hide sidebar')
+_logo_title = _logo_titles.get(st.session_state.ui_lang, 'Open Lexibot menu')
+
+st.markdown(f"""
+<div id=\"lexiToggle\" class=\"lexi-toggle\" title=\"{_toggle_title}\" role=\"button\" tabindex=\"0\" aria-label=\"{_toggle_title}\">«</div>
+<div id=\"lexiLogo\" class=\"lexi-logo-badge\" title=\"{_logo_title}\" role=\"button\" tabindex=\"0\" aria-label=\"{_logo_title}\">
+  <svg viewBox=\"0 0 64 64\" width=\"36\" height=\"36\" aria-hidden=\"true\">
+    <defs>
+      <linearGradient id=\"g1\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\">
+        <stop offset=\"0%\" stop-color=\"#d4af37\"/>
+        <stop offset=\"100%\" stop-color=\"#b8941f\"/>
+      </linearGradient>
+    </defs>
+    <!-- Scale of justice -->
+    <circle class=\"ring\" cx=\"32\" cy=\"32\" r=\"28\" fill=\"none\" stroke=\"url(#g1)\" stroke-width=\"2\" opacity=\"0.7\"/>
+    <rect x=\"30\" y=\"18\" width=\"4\" height=\"24\" fill=\"url(#g1)\"/>
+    <rect x=\"24\" y=\"18\" width=\"16\" height=\"4\" rx=\"2\" fill=\"url(#g1)\"/>
+    <path d=\"M20 26 L28 26 L24 36 Z\" fill=\"none\" stroke=\"#d4af37\" stroke-width=\"2\"/>
+    <path d=\"M36 26 L44 26 L40 36 Z\" fill=\"none\" stroke=\"#d4af37\" stroke-width=\"2\"/>
+    <!-- Crescent & star (Tunisia) -->
+    <circle cx=\"46\" cy=\"20\" r=\"6\" fill=\"#e11d48\"/>
+    <circle cx=\"44.5\" cy=\"20\" r=\"5\" fill=\"#0f172a\"/>
+    <polygon points=\"46,16.5 47,19 49.7,19.2 47.5,20.8 48.2,23.3 46,21.9 43.8,23.3 44.5,20.8 42.3,19.2 45,19\" fill=\"#f8fafc\"/>
+  </svg>
+</div>
+""", unsafe_allow_html=True)
+
+# Run toggle logic in an iframe so scripts execute (Streamlit sanitizes <script> in markdown)
+components.html("""
+<!DOCTYPE html>
+<html>
+<head><meta charset=\"utf-8\"></head>
+<body style=\"margin:0; padding:0; background:transparent;\">
+<script>
+(function(){
+  const doc = window.parent.document;
+  let initialized = false;
+  
+  function qs(s){ return doc.querySelector(s); }
+  
+  function dir(){
+    try { return doc.defaultView.getComputedStyle(doc.documentElement).direction || 'ltr'; }
+    catch(e){ return 'ltr'; }
+  }
+  
+  function setDirClasses(){
+    const isRTL = dir() === 'rtl';
+    doc.body.classList.toggle('lexi-rtl', isRTL);
+    doc.body.classList.toggle('lexi-ltr', !isRTL);
+  }
+  
+  function ensureElements(){
+    let t = qs('#lexiToggle');
+    if(!t){
+      t = doc.createElement('div');
+      t.id = 'lexiToggle';
+      t.className = 'lexi-toggle';
+      t.setAttribute('role','button');
+      t.setAttribute('tabindex','0');
+      t.setAttribute('title','Show/Hide sidebar');
+      t.setAttribute('aria-pressed','false');
+      t.style.cssText = 'position:fixed;top:16px;left:16px;z-index:99999;';
+      doc.body.appendChild(t);
+    }
+    let l = qs('#lexiLogo');
+    if(!l){
+      l = doc.createElement('div');
+      l.id = 'lexiLogo';
+      l.className = 'lexi-logo-badge';
+      l.setAttribute('role','button');
+      l.setAttribute('tabindex','0');
+      l.setAttribute('title','Open Lexibot menu');
+      l.style.zIndex = '99998';
+      l.innerHTML = '<svg viewBox="0 0 64 64" width="36" height="36" aria-hidden="true"><defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#d4af37"/><stop offset="100%" stop-color="#b8941f"/></linearGradient></defs><circle class="ring" cx="32" cy="32" r="28" fill="none" stroke="url(#g1)" stroke-width="2" opacity="0.7"/><rect x="30" y="18" width="4" height="24" fill="url(#g1)"/><rect x="24" y="18" width="16" height="4" rx="2" fill="url(#g1)"/><path d="M20 26 L28 26 L24 36 Z" fill="none" stroke="#d4af37" stroke-width="2"/><path d="M36 26 L44 26 L40 36 Z" fill="none" stroke="#d4af37" stroke-width="2"/><circle cx="46" cy="20" r="6" fill="#e11d48"/><circle cx="44.5" cy="20" r="5" fill="#0f172a"/><polygon points="46,16.5 47,19 49.7,19.2 47.5,20.8 48.2,23.3 46,21.9 43.8,23.3 44.5,20.8 42.3,19.2 45,19" fill="#f8fafc"/></svg>';
+      doc.body.appendChild(l);
+    }
+  }
+  
+  function getSidebar(){ return qs('section[data-testid="stSidebar"]'); }
+  
+  function isSidebarVisible(){
+    try {
+      const s = getSidebar();
+      if(!s) return false;
+      const st = doc.defaultView.getComputedStyle(s);
+      const w = parseFloat(st.width) || 0;
+      return st.display !== 'none' && st.visibility !== 'hidden' && parseFloat(st.opacity) > 0.1 && w > 10;
+    } catch(e){ return false; }
+  }
+  
+  function hideTransform(){
+    return dir()==='rtl' ? 'translateX(110%)' : 'translateX(-110%)';
+  }
+  
+  function applyInlineState(open){
+    const s = getSidebar();
+    if(!s) return;
+    
+    if(open){
+      s.style.cssText = 'min-width: 300px !important; max-width: 420px !important; height: 100vh !important; transform: none !important; opacity: 1 !important; pointer-events: auto !important; width: auto !important; margin: auto !important; padding-top: var(--space-5) !important; border-right: 1px solid rgba(212, 175, 55, 0.25) !important; overflow-y: auto !important; overflow-x: hidden !important;';
+    } else {
+      s.style.cssText = `transform: ${hideTransform()} !important; opacity: 0 !important; pointer-events: none !important; width: 0px !important; min-width: 0px !important; max-width: 0px !important; height: 0px !important; margin: 0 !important; padding: 0 !important; border-right: 0 !important; overflow: hidden !important;`;
+    }
+  }
+  
+  function updateToggleLabel(collapsed){
+    const t = qs('#lexiToggle');
+    if(!t) return;
+    const isRTL = dir() === 'rtl';
+    const collapsedChar = isRTL ? '›' : '«';
+    const expandedChar = isRTL ? '‹' : '»';
+    t.textContent = collapsed ? collapsedChar : expandedChar;
+    t.setAttribute('aria-pressed', collapsed ? 'true' : 'false');
+  }
+  
+  function setCollapsed(flag){
+    if(!initialized) return;
+    
+    console.log('Setting sidebar collapsed:', flag);
+    
+    // Update body classes
+    doc.body.classList.toggle('lexi-sb-collapsed', flag);
+    
+    // Save state
+    try { 
+      window.parent.localStorage.setItem('lexi_sb_c', flag ? '1' : '0'); 
+    } catch(e){
+      console.log('Failed to save sidebar state:', e);
+    }
+    
+    // Update toggle label
+    updateToggleLabel(flag);
+    
+    // Apply visual state
+    applyInlineState(!flag);
+    
+    // Force a small delay to ensure styles are applied
+    setTimeout(() => applyInlineState(!flag), 50);
+  }
+  
+  function getCurrentState(){
+    // Check both localStorage and current DOM state
+    let savedState = false;
+    try { 
+      savedState = (window.parent.localStorage.getItem('lexi_sb_c') === '1'); 
+    } catch(e){}
+    
+    const hasCollapsedClass = doc.body.classList.contains('lexi-sb-collapsed');
+    const visible = isSidebarVisible();
+    
+    // Use DOM state as source of truth if different from localStorage
+    return hasCollapsedClass || (!visible && savedState);
+  }
+  
+  function wire(){
+    const t = qs('#lexiToggle');
+    if(t && !t._wired){
+      t._wired = true;
+      t.onclick = function(e){ 
+        e.preventDefault();
+        e.stopPropagation();
+        const currentlyCollapsed = getCurrentState();
+        setCollapsed(!currentlyCollapsed);
+      };
+      t.onkeydown = function(e){ 
+        if(e.key==='Enter' || e.key===' '){ 
+          e.preventDefault(); 
+          t.click(); 
+        } 
+      };
+    }
+    
+    const l = qs('#lexiLogo');
+    if(l && !l._wired){
+      l._wired = true;
+      l.onclick = function(e){ 
+        e.preventDefault();
+        e.stopPropagation();
+        setCollapsed(false);
+      };
+      l.onkeydown = function(e){ 
+        if(e.key==='Enter' || e.key===' '){ 
+          e.preventDefault(); 
+          l.click(); 
+        } 
+      };
+    }
+    
+    // Global keyboard shortcut
+    if(!doc._keydownWired){
+      doc._keydownWired = true;
+      doc.addEventListener('keydown', function(e){
+        if((e.ctrlKey || e.metaKey) && (e.key && e.key.toLowerCase() === 'b')){
+          e.preventDefault();
+          const currentlyCollapsed = getCurrentState();
+          setCollapsed(!currentlyCollapsed);
+        }
+      });
+    }
+  }
+  
+  function init(){
+    if(initialized) return;
+    
+    try{
+      console.log('Initializing sidebar toggle...');
+      
+      setDirClasses();
+      ensureElements();
+      
+      // Get initial state
+      const savedState = getCurrentState();
+      console.log('Initial sidebar state (collapsed):', savedState);
+      
+      // Set initial state
+      doc.body.classList.toggle('lexi-sb-collapsed', savedState);
+      updateToggleLabel(savedState);
+      applyInlineState(!savedState);
+      
+      // Wire up event handlers
+      wire();
+      
+      initialized = true;
+      console.log('Sidebar toggle initialized successfully');
+      
+      // Set up observer to maintain state
+      const mo = new MutationObserver(function(){
+        if(!initialized) return;
+        setDirClasses();
+        ensureElements();
+        
+        // Re-wire if needed
+        const t = qs('#lexiToggle');
+        const l = qs('#lexiLogo');
+        if(t && !t._wired) wire();
+        if(l && !l._wired) wire();
+        
+        // Maintain current state
+        const currentState = getCurrentState();
+        applyInlineState(!currentState);
+      });
+      mo.observe(doc.body, {childList: true, subtree: true});
+      
+    } catch(e){ 
+      console.log('Sidebar toggle init error:', e);
+    }
+  }
+  
+  function waitForStreamlit(attempts){
+    if(attempts <= 0) { 
+      console.log('Max attempts reached, initializing anyway');
+      init(); 
+      return; 
+    }
+    
+    const sidebar = getSidebar();
+    if(sidebar){
+      console.log('Streamlit sidebar found, initializing');
+      setTimeout(init, 100); // Small delay to ensure Streamlit is fully loaded
+      return;
+    }
+    
+    setTimeout(function(){ waitForStreamlit(attempts - 1); }, 200);
+  }
+  
+  // Start the initialization process
+  waitForStreamlit(25); // Increased attempts
+  
+})();
+</script>
+</body>
+</html>
+""", height=0, width=0)
+
+# Auto-save on inactivity (5 minutes)
+now_ts = time.time()
+if st.session_state.unsaved_changes and not st.session_state.auto_saved:
+    if now_ts - st.session_state.last_interaction > 300:
+        save_conversation()
+
+
+# ---------- SIDEBAR ----------
+with st.sidebar:
+    st.markdown(f"""
+    <div class="glass-card" style="position: sticky; top: 0; z-index: 999; background: rgba(31, 41, 55, 0.95); backdrop-filter: blur(10px);">
+        <div style="display: flex; align-items: center; justify-content: center; margin-bottom: 0.5rem;">
+            <span style="font-size: 1.5rem; margin-right: 8px;">⚖️</span>
+            <span style="font-size: 1rem; font-weight: bold; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+                Lexibot • <span style="color: #d4af37;">Hila Ben Arbia</span>
+            </span>
+        </div>
+        <div style="text-align: center; font-size: 0.8rem; color: #9ca3af;">
+            {lang_flags[st.session_state.ui_lang]} {lang_names[st.session_state.ui_lang]}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Language selector
+    ui_lang = st.selectbox(
+        "🌐 UI Language / لغة الواجهة",
+        ["fr", "en", "ar"],
+        index=["fr", "en", "ar"].index(st.session_state.ui_lang),
+        format_func=lambda k: f"{lang_flags[k]} {lang_names[k]}"
+    )
+    
+    if ui_lang != st.session_state.ui_lang:
+        st.session_state.ui_lang = ui_lang
+        rerun()
+    
+    # Auto language detection
+    auto_lang = st.checkbox(texts["auto_lang"][ui_lang], value=True)
+    
+    # Model selection with custom names (reordered: o3, o2, o1)
+    model_choice = st.selectbox(
+        texts["model_label"][ui_lang], 
+        ["lexi-o3", "lexi-o2", "lexi-o1"], 
+        index=0,
+        help=texts["model_help"][ui_lang]
+    )
+    st.session_state.model = model_choice
+    
+    st.markdown("---")
+    
+    # Conversation controls - single button
+    if st.button("🆕 Nouvelle conversation", key="new_conv", help="Commencer une nouvelle conversation", use_container_width=True):
+        start_new_conversation(save_before=False)
+        rerun()
+    
+    # Removed conversation history section for cleaner interface
+    
+    st.markdown("---")
+    
+    # Contact information
+    st.markdown(f"""
+    <div class="glass-card">
+        <div class="contact-name">Cabinet Hila Ben Arbia</div>
+        <div class="contact-info">
+            {texts['foot_contact'][ui_lang]}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ---------- MAIN HEADER ----------
+st.markdown(f"""
+<div class="glass-card">
+    <div class="header-container">
+        <div class="header-title">
+            <img src="{LEXIBOT_AVATAR}" class="message-avatar" style="width: 60px; height: 60px;">
+            {texts["title"][ui_lang]}
+        </div>
+        <div class="header-badge">
+            ⚖️ {lang_flags[ui_lang]} {lang_names[ui_lang]}
+        </div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# Introduction text
+st.markdown(f"""
+<div class="glass-card">
+    <div class="intro-text {('rtl' if ui_lang == 'ar' else 'ltr')}">
+        {texts['intro'][ui_lang]}
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# ---------- CATEGORY SELECTION (TOP) ----------
+category_label = texts['category_label'][ui_lang]
+category = st.selectbox(
+    f"📂 {category_label}",
+    categories[ui_lang],
+    index=0,
+    key="category_top"  # use a distinct key to avoid conflicts
+)
+
+# Show the selected category as an enhanced chip
+selected_texts = { 'fr': '📂 Catégorie sélectionnée', 'en': '📂 Selected category', 'ar': '📂 التصنيف المختار' }
+st.markdown(
+    f"<div class='category-chip'>{selected_texts.get(ui_lang, 'Selected category')}: <strong>{category}</strong></div>",
+    unsafe_allow_html=True,
+)
+
+# Add a subtle divider
+st.markdown(
+    "<div style='height: 1px; background: linear-gradient(90deg, transparent, rgba(212, 175, 55, 0.3), transparent); margin: 1.5rem 0;'></div>",
+    unsafe_allow_html=True
+)
+
+# ---------- CHAT DISPLAY ----------
+chat_container = st.container()
+with chat_container:
+    st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+    if not st.session_state.chat:
+        # Welcome message when chat is empty
+        welcome_msg = texts['intro'][ui_lang]
+        from datetime import datetime as dt
+        render_message("bot", welcome_msg, ui_lang, LEXIBOT_AVATAR, dt.now().strftime("%H:%M"))
+    else:
+        # Display all messages
+        for msg in st.session_state.chat:
+            avatar = USER_AVATAR if msg["role"] == "user" else LEXIBOT_AVATAR
+            render_message(msg["role"], msg["text"], msg["lang"], avatar, msg["time"])
+
+# Chat input with better spacing
+st.markdown("<div style='margin-top: 2rem;'>", unsafe_allow_html=True)
+
+with st.form("chat-input", clear_on_submit=True):
+    # Message input
+    user_text = st.text_area(
+        " ",
+        height=100,
+        placeholder=texts["placeholder"][ui_lang],
+        label_visibility="collapsed",
+        key="user_input_area"
+    )
+    
+    
+    # Submit button - ALL of this must be indented to be inside the form
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        submit = st.form_submit_button(f"🚀 {texts['send'][ui_lang]}", use_container_width=True)
+    with col2:
+        clear_btn = st.form_submit_button(f"🧹 {texts['clear'][ui_lang]}")
+    with col3:
+        export_btn = st.form_submit_button(f"📥 {texts['export'][ui_lang]}")
+
+# JavaScript pour gérer la touche Entrée - THIS is correctly outside the form
+st.markdown("""
+<script>
+// Your JavaScript code...
+</script>
+""", unsafe_allow_html=True)
+
+# ---------- HANDLE FORM ACTIONS ----------
+if clear_btn:
+    # Optionally clear without saving; keep explicit save controls in sidebar
+    st.session_state.chat = []
+    st.session_state.exported = False
+    st.session_state.unsaved_changes = False
+    rerun()
+
+if export_btn:
+    if st.session_state.chat:
+        transcript_lines = []
+        for m in st.session_state.chat:
+            who = "YOU" if m["role"] == "user" else "LEXIBOT"
+            transcript_lines.append(f"[{m['time']}] {who} ({m['lang']}|{m['category']}): {m['text']}")
+        transcript = "\n".join(transcript_lines)
+        
+        st.download_button(
+            label=f"📥 {texts['export'][ui_lang]}", 
+            data=transcript, 
+            file_name=f"lexibot_conversation_{dt.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            mime="text/plain"
+        )
+        st.session_state.exported = True
+    else:
+        st.warning("No conversation to export.")
+
+# ---------- HANDLE MESSAGE SUBMISSION ----------
+if submit:
+    content = (user_text or "").strip()
+    if not content:
+        st.warning(texts["warning"][ui_lang])
+    else:
+        # Rate limiting - prevent multiple rapid requests
+        current_time = time.time()
+        if current_time - st.session_state.last_request < 2:  # 2 seconds between requests
+            st.warning("Veuillez patienter avant d'envoyer une autre requête.")
+        else:
+            st.session_state.last_request = current_time
+            
+            st.session_state.last_interaction = time.time()
+            # Language detection and routing
+            chosen_lang = st.session_state.ui_lang
+            detected = lang_detect_safe(content, chosen_lang)
+            
+            if auto_lang:
+                chosen_lang = detected
+                st.info(texts["detected_note"][st.session_state.ui_lang].format(
+                    lang=f"{lang_flags[detected]} {lang_names.get(detected, detected)}"
+                ))
+            
+            from datetime import datetime as dt
+            now = dt.now().strftime("%H:%M")
+            
+            # Add user message
+            st.session_state.chat.append({
+                "role": "user",
+                "text": content,
+                "lang": chosen_lang,
+                "category": category,
+                "time": now
+            })
+            
+            # Show typing indicator
+            with chat_container:
+                st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+                
+                # Display all previous messages
+                for msg in st.session_state.chat:
+                    avatar = USER_AVATAR if msg["role"] == "user" else LEXIBOT_AVATAR
+                    render_message(msg["role"], msg["text"], msg["lang"], avatar, msg["time"])
+                
+                # Show typing indicator
+                typing_html = f"""
+                <div class="message-row bot fade-in">
+                    <img class="message-avatar" src="{LEXIBOT_AVATAR}" alt="bot">
+                    <div class="message-bubble bot">
+                        <div class="typing-indicator">
+                            <span>{texts['typing'][chosen_lang]}</span>
+                            <div class="typing-dots">
+                                <span></span><span></span><span></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                """
+                typing_placeholder = st.empty()
+                typing_placeholder.markdown(typing_html, unsafe_allow_html=True)
+                st.markdown(play_typing_sound(chosen_lang), unsafe_allow_html=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Get API response
+            reply_text, raw = send_to_api(
+                message=content,
+                category=category,
+                chosen_language=chosen_lang,
+                model=st.session_state.model,
+                stream=False
+            )
+            
+            # Remove typing indicator
+            typing_placeholder.empty()
+            
+            # Add bot response
+            now_bot = dt.now().strftime("%H:%M")
+            st.session_state.chat.append({
+                "role": "bot",
+                "text": reply_text,
+                "lang": chosen_lang,
+                "category": category,
+                "time": now_bot
+            })
+            
+            st.session_state.exported = False
+            st.session_state.unsaved_changes = True
+            st.session_state.last_interaction = time.time()
+            rerun()
+
+# ---------- FOOTER ----------
+st.markdown(f"""
+<div class="contact-card">
+    <img src="{LEXIBOT_AVATAR}" class="message-avatar" style="width: 50px; height: 50px;">
+    <div>
+        <div class="contact-name">Cabinet Hila Ben Arbia</div>
+        <div class="contact-info">{texts['foot_contact'][ui_lang]}</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)

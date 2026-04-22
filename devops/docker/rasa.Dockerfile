@@ -1,3 +1,4 @@
+# rasa.Dockerfile
 FROM python:3.8-slim
 
 WORKDIR /app
@@ -5,21 +6,20 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
 
-# Install required system deps
+# Installer gcc et make
 RUN apt-get update && \
     apt-get install -y gcc g++ make && \
     apt-get clean
 
-# Copy requirements
-COPY requirements_rasa.txt /app/requirements.txt
+# Copier requirements depuis la racine
+COPY ../../requirements_rasa.txt ./requirements.txt
 
-# Install Rasa dependencies
+# Installer Rasa
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the full Rasa project
-COPY . /app
+# Copier le code Rasa
+COPY ../rasa /app
 
 EXPOSE 5005
 
 CMD ["rasa", "run", "--enable-api", "--cors", "*", "--debug"]
-

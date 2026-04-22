@@ -1,0 +1,274 @@
+PS C:\Users\MSI> cd C:\Users\MSI\LEXIBOT_PRO\devops
+PS C:\Users\MSI\LEXIBOT_PRO\devops> docker-compose start
+failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine; check if the path is correct and if the daemon is running: open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified.
+PS C:\Users\MSI\LEXIBOT_PRO\devops> docker-compose start
+[+] start 5/5
+ ✔ Container lexibot_rasa         Started                                                                          1.0ss
+ ✔ Container lexibot_postgres     Healthy                                                                          11.5s
+ ✔ Container lexibot_rasa_actions Started                                                                          0.6ss
+ ✔ Container lexibot_backend      Started                                                                          0.5s
+ ✔ Container lexibot_frontend     Started                                                                          0.5s
+PS C:\Users\MSI\LEXIBOT_PRO\devops> docker ps
+CONTAINER ID   IMAGE                 COMMAND                  CREATED        STATUS                             PORTS                                         NAMES
+9cd2d7843338   devops-frontend       "streamlit run lexib…"   17 hours ago   Up 12 seconds                      0.0.0.0:8501->8501/tcp, [::]:8501->8501/tcp   lexibot_frontend
+0d37119097ee   devops-backend        "uvicorn api.main:ap…"   17 hours ago   Up 12 seconds (health: starting)   0.0.0.0:8000->8000/tcp, [::]:8000->8000/tcp   lexibot_backend
+0ecf77ef3d55   devops-rasa           "rasa run --enable-a…"   17 hours ago   Up 24 seconds                      0.0.0.0:5005->5005/tcp, [::]:5005->5005/tcp   lexibot_rasa
+186969ce9d82   devops-rasa_actions   "python -m rasa_sdk …"   46 hours ago   Up 23 seconds                      0.0.0.0:5055->5055/tcp, [::]:5055->5055/tcp   lexibot_rasa_actions
+cf84097df696   postgres:15-alpine    "docker-entrypoint.s…"   46 hours ago   Up 24 seconds (healthy)            0.0.0.0:5433->5432/tcp, [::]:5433->5432/tcp   lexibot_postgres
+PS C:\Users\MSI\LEXIBOT_PRO\devops> docker-compose logs -f backend frontend
+lexibot_backend   | INFO:     Will watch for changes in these directories: ['/app']
+lexibot_backend   | INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+lexibot_frontend  |
+lexibot_backend   | INFO:     Started reloader process [1] using WatchFiles
+lexibot_backend   | INFO:     Ollama API accessible à http://host.docker.internal:11434.
+lexibot_backend   | INFO:     Started server process [9]
+lexibot_backend   | INFO:     Waiting for application startup.
+lexibot_backend   | 🚀 Starting API...
+lexibot_backend   | ✅ Base de données et tables créées/vérifiées.
+lexibot_backend   | 📊 Database ready: {'users_by_role': {<UserRole.CLIENT: 'client'>: 2}, 'total_conversations': 0, 'total_appointments': 0}
+lexibot_backend   | INFO:     Application startup complete.
+lexibot_frontend  | Collecting usage statistics. To deactivate, set browser.gatherUsageStats to false.
+lexibot_frontend  |
+lexibot_backend   | INFO:     Shutting down
+lexibot_frontend  |
+lexibot_frontend  |   You can now view your Streamlit app in your browser.
+lexibot_frontend  |
+lexibot_frontend  |   URL: http://0.0.0.0:8501
+lexibot_frontend  |
+lexibot_frontend  | 2026-03-27 00:51:15.511 Uncaught app exception
+lexibot_frontend  | Traceback (most recent call last):
+lexibot_backend   | INFO:     Waiting for application shutdown.
+lexibot_backend   | 🛑 API stopped
+lexibot_backend   | INFO:     Application shutdown complete.
+lexibot_backend   | INFO:     Finished server process [9]
+lexibot_backend   | INFO:     Will watch for changes in these directories: ['/app']
+lexibot_frontend  |   File "/usr/local/lib/python3.12/site-packages/streamlit/runtime/scriptrunner/exec_code.py", line 88, in exec_func_with_error_handling
+lexibot_backend   | INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+lexibot_backend   | INFO:     Started reloader process [1] using WatchFiles
+lexibot_backend   | INFO:     Ollama API accessible à http://host.docker.internal:11434.
+lexibot_backend   | INFO:     Started server process [9]
+lexibot_backend   | INFO:     Waiting for application startup.
+lexibot_backend   | 🚀 Starting API...
+lexibot_backend   | ✅ Base de données et tables créées/vérifiées.
+lexibot_frontend  |     result = func()
+lexibot_frontend  |              ^^^^^^
+lexibot_backend   | 📊 Database ready: {'users_by_role': {<UserRole.CLIENT: 'client'>: 2}, 'total_conversations': 0, 'total_appointments': 0}
+lexibot_backend   | INFO:     Application startup complete.
+lexibot_frontend  |   File "/usr/local/lib/python3.12/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 579, in code_to_exec
+lexibot_frontend  |     exec(code, module.__dict__)
+lexibot_frontend  |   File "/app/lexibot_app.py", line 2007, in <module>
+lexibot_frontend  |     show_client_auth()
+lexibot_frontend  |   File "/app/lexibot_app.py", line 1565, in show_client_auth
+lexibot_frontend  |     st.success(f"👋 {texts['hello'][st.session_state.ui_lang]} {user_info.get('first_name', 'Client')}")
+lexibot_frontend  |                      ~~~~~^^^^^^^^^
+lexibot_frontend  | KeyError: 'hello'
+lexibot_frontend  |   Stopping...
+lexibot_frontend  |
+lexibot_frontend  | Collecting usage statistics. To deactivate, set browser.gatherUsageStats to false.
+lexibot_frontend  |
+lexibot_frontend  |
+lexibot_frontend  |   You can now view your Streamlit app in your browser.
+lexibot_frontend  |
+lexibot_frontend  |   URL: http://0.0.0.0:8501
+lexibot_frontend  |
+lexibot_frontend  | 2026-03-27 00:54:29.806 Uncaught app exception
+lexibot_frontend  | Traceback (most recent call last):
+lexibot_frontend  |   File "/usr/local/lib/python3.12/site-packages/streamlit/runtime/scriptrunner/exec_code.py", line 88, in exec_func_with_error_handling
+lexibot_frontend  |     result = func()
+lexibot_frontend  |              ^^^^^^
+lexibot_frontend  |   File "/usr/local/lib/python3.12/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 579, in code_to_exec
+lexibot_frontend  |     exec(code, module.__dict__)
+lexibot_frontend  |   File "/app/lexibot_app.py", line 2007, in <module>
+lexibot_frontend  |     show_client_auth()
+lexibot_frontend  |   File "/app/lexibot_app.py", line 1565, in show_client_auth
+lexibot_frontend  |     st.success(f"👋 {texts['hello'][st.session_state.ui_lang]} {user_info.get('first_name', 'Client')}")
+lexibot_frontend  |                      ~~~~~^^^^^^^^^
+lexibot_frontend  | KeyError: 'hello'
+lexibot_frontend  |   Stopping...
+lexibot_frontend  |
+lexibot_frontend  | Collecting usage statistics. To deactivate, set browser.gatherUsageStats to false.
+lexibot_frontend  |
+lexibot_frontend  |
+lexibot_frontend  |   You can now view your Streamlit app in your browser.
+lexibot_frontend  |
+lexibot_frontend  |   URL: http://0.0.0.0:8501
+lexibot_frontend  |
+lexibot_frontend  | 2026-03-27 18:05:28.862 Uncaught app exception
+lexibot_frontend  | Traceback (most recent call last):
+lexibot_frontend  |   File "/usr/local/lib/python3.12/site-packages/streamlit/runtime/scriptrunner/exec_code.py", line 88, in exec_func_with_error_handling
+lexibot_frontend  |     result = func()
+lexibot_frontend  |              ^^^^^^
+lexibot_frontend  |   File "/usr/local/lib/python3.12/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 579, in code_to_exec
+lexibot_frontend  |     exec(code, module.__dict__)
+lexibot_frontend  |   File "/app/lexibot_app.py", line 2012, in <module>
+lexibot_frontend  |     show_client_auth()
+lexibot_frontend  |   File "/app/lexibot_app.py", line 1573, in show_client_auth
+lexibot_frontend  |     if st.button("🚪 " + texts["logout"][st.session_state.ui_lang], type="secondary"):
+lexibot_frontend  |                          ~~~~~^^^^^^^^^^
+lexibot_frontend  | KeyError: 'logout'
+lexibot_frontend  | 2026-03-27 18:18:48.387 Uncaught app exception
+lexibot_frontend  | Traceback (most recent call last):
+lexibot_frontend  |   File "/usr/local/lib/python3.12/site-packages/streamlit/runtime/scriptrunner/exec_code.py", line 88, in exec_func_with_error_handling
+lexibot_frontend  |     result = func()
+lexibot_frontend  |              ^^^^^^
+lexibot_frontend  |   File "/usr/local/lib/python3.12/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 579, in code_to_exec
+lexibot_frontend  |     exec(code, module.__dict__)
+lexibot_frontend  |   File "/app/lexibot_app.py", line 2012, in <module>
+lexibot_frontend  |     if response.status_code == 200:
+lexibot_frontend  |     ^^^^^^^^^^^^^^^^^^
+lexibot_frontend  |   File "/app/lexibot_app.py", line 1573, in show_client_auth
+lexibot_frontend  |     # --- If user already logged in ---
+lexibot_frontend  |                                    ^^^^^
+lexibot_frontend  | KeyError: 'logout'
+lexibot_frontend has been recreated
+lexibot_frontend  |   Stopping...
+lexibot_frontend exited with code 0
+lexibot_frontend  |
+lexibot_frontend  | Collecting usage statistics. To deactivate, set browser.gatherUsageStats to false.
+lexibot_frontend  |
+lexibot_frontend  |
+lexibot_frontend  |   You can now view your Streamlit app in your browser.
+lexibot_frontend  |
+lexibot_frontend  |   URL: http://0.0.0.0:8501
+lexibot_frontend  |
+lexibot_frontend  |   Stopping...
+lexibot_frontend exited with code 137 (restarting)
+lexibot_frontend  |
+lexibot_frontend  | Collecting usage statistics. To deactivate, set browser.gatherUsageStats to false.
+lexibot_frontend  |
+lexibot_frontend  |
+lexibot_frontend  |   You can now view your Streamlit app in your browser.
+lexibot_frontend  |
+lexibot_frontend  |   URL: http://0.0.0.0:8501
+lexibot_frontend  |
+lexibot_frontend  |   Stopping...
+lexibot_frontend exited with code 0 (restarting)
+lexibot_frontend  |
+lexibot_frontend  | Collecting usage statistics. To deactivate, set browser.gatherUsageStats to false.
+lexibot_frontend  |
+lexibot_frontend  |
+lexibot_frontend  |   You can now view your Streamlit app in your browser.
+lexibot_frontend  |
+lexibot_frontend  |   URL: http://0.0.0.0:8501
+lexibot_frontend  |
+lexibot_frontend  |   Stopping...
+lexibot_frontend exited with code 0 (restarting)
+lexibot_frontend  |
+lexibot_frontend  | Collecting usage statistics. To deactivate, set browser.gatherUsageStats to false.
+lexibot_frontend  |
+lexibot_frontend  |
+lexibot_frontend  |   You can now view your Streamlit app in your browser.
+lexibot_frontend  |
+lexibot_frontend  |   URL: http://0.0.0.0:8501
+lexibot_frontend  |
+lexibot_frontend has been recreated
+lexibot_frontend  |   Stopping...
+lexibot_frontend exited with code 0
+lexibot_frontend  |
+lexibot_frontend  | Collecting usage statistics. To deactivate, set browser.gatherUsageStats to false.
+lexibot_frontend  |
+lexibot_frontend  |
+lexibot_frontend  |   You can now view your Streamlit app in your browser.
+lexibot_frontend  |
+lexibot_frontend  |   URL: http://0.0.0.0:8501
+lexibot_frontend  |
+lexibot_backend   | WARNING:  WatchFiles detected changes in 'schemas/chatbot_schema.py'. Reloading...
+lexibot_backend   | INFO:     Shutting down
+lexibot_backend   | INFO:     Waiting for application shutdown.
+lexibot_backend   | 🛑 API stopped
+lexibot_backend   | INFO:     Application shutdown complete.
+lexibot_backend   | INFO:     Finished server process [9]
+lexibot_backend   | INFO:     Ollama API accessible à http://host.docker.internal:11434.
+lexibot_backend   | INFO:     Started server process [3598]
+lexibot_backend   | INFO:     Waiting for application startup.
+lexibot_backend   | 🚀 Starting API...
+lexibot_backend   | ✅ Base de données et tables créées/vérifiées.
+lexibot_backend   | 📊 Database ready: {'users_by_role': {<UserRole.CLIENT: 'client'>: 2}, 'total_conversations': 0, 'total_appointments': 0}
+lexibot_backend   | INFO:     Application startup complete.
+lexibot_backend has been recreated
+lexibot_backend   | INFO:     Shutting down
+lexibot_backend   | INFO:     Waiting for application shutdown.
+lexibot_backend   | 🛑 API stopped
+lexibot_backend   | INFO:     Application shutdown complete.
+lexibot_backend   | INFO:     Finished server process [3598]
+lexibot_backend   | INFO:     Stopping reloader process [1]
+lexibot_backend exited with code 137
+lexibot_frontend has been recreated
+lexibot_frontend  |   Stopping...
+lexibot_frontend exited with code 137
+lexibot_backend   | INFO:     Will watch for changes in these directories: ['/app']
+lexibot_backend   | INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+lexibot_backend   | INFO:     Started reloader process [1] using WatchFiles
+lexibot_frontend  |
+lexibot_frontend  | Collecting usage statistics. To deactivate, set browser.gatherUsageStats to false.
+lexibot_frontend  |
+lexibot_frontend  |
+lexibot_frontend  |   You can now view your Streamlit app in your browser.
+lexibot_frontend  |
+lexibot_frontend  |   URL: http://0.0.0.0:8501
+lexibot_frontend  |
+lexibot_backend   | INFO:     Ollama API accessible à http://host.docker.internal:11434.
+lexibot_backend   | INFO:     Started server process [8]
+lexibot_backend   | INFO:     Waiting for application startup.
+lexibot_backend   | 🚀 Starting API...
+lexibot_backend   | ✅ Base de données et tables créées/vérifiées.
+lexibot_backend   | INFO:     Application startup complete.
+lexibot_backend   | 📊 Database ready: {'users_by_role': {<UserRole.CLIENT: 'client'>: 2}, 'total_conversations': 0, 'total_appointments': 0}
+lexibot_frontend  | 2026-03-27 19:37:37.399 Uncaught app exception
+lexibot_frontend  | Traceback (most recent call last):
+lexibot_frontend  |   File "/usr/local/lib/python3.12/site-packages/streamlit/runtime/state/session_state.py", line 455, in __getitem__
+lexibot_frontend  |     return self._getitem(widget_id, key)
+lexibot_frontend  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+lexibot_frontend  |   File "/usr/local/lib/python3.12/site-packages/streamlit/runtime/state/session_state.py", line 500, in _getitem
+lexibot_frontend  |     raise KeyError
+lexibot_frontend  | KeyError
+lexibot_frontend  |
+lexibot_frontend  | During handling of the above exception, another exception occurred:
+lexibot_frontend  |
+lexibot_frontend  | Traceback (most recent call last):
+lexibot_frontend  |   File "/usr/local/lib/python3.12/site-packages/streamlit/runtime/state/session_state_proxy.py", line 129, in __getattr__
+lexibot_frontend  |     return self[key]
+lexibot_frontend  |            ~~~~^^^^^
+lexibot_frontend  |   File "/usr/local/lib/python3.12/site-packages/streamlit/runtime/state/session_state_proxy.py", line 100, in __getitem__
+lexibot_frontend  |     return get_session_state()[key]
+lexibot_frontend  |            ~~~~~~~~~~~~~~~~~~~^^^^^
+lexibot_frontend  |   File "/usr/local/lib/python3.12/site-packages/streamlit/runtime/state/safe_session_state.py", line 94, in __getitem__
+lexibot_frontend  |     return self._state[key]
+lexibot_frontend  |            ~~~~~~~~~~~^^^^^
+lexibot_frontend  |   File "/usr/local/lib/python3.12/site-packages/streamlit/runtime/state/session_state.py", line 457, in __getitem__
+lexibot_frontend  |     raise KeyError(_missing_key_error_message(key))
+lexibot_frontend  | KeyError: 'st.session_state has no key "last_request". Did you forget to initialize it? More info: https://docs.streamlit.io/develop/concepts/architecture/session-state#initialization'
+lexibot_frontend  |
+lexibot_frontend  | During handling of the above exception, another exception occurred:
+lexibot_frontend  |
+lexibot_frontend  | Traceback (most recent call last):
+lexibot_frontend  |   File "/usr/local/lib/python3.12/site-packages/streamlit/runtime/scriptrunner/exec_code.py", line 88, in exec_func_with_error_handling
+lexibot_frontend  |     result = func()
+lexibot_frontend  |              ^^^^^^
+lexibot_frontend  |   File "/usr/local/lib/python3.12/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 579, in code_to_exec
+lexibot_frontend  |     exec(code, module.__dict__)
+lexibot_frontend  |   File "/app/lexibot_app.py", line 2515, in <module>
+lexibot_frontend  |     if current_time - st.session_state.last_request < 2:  # 2 seconds between requests
+lexibot_frontend  |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+lexibot_frontend  |   File "/usr/local/lib/python3.12/site-packages/streamlit/runtime/state/session_state_proxy.py", line 131, in __getattr__
+lexibot_frontend  |     raise AttributeError(_missing_attr_error_message(key))
+lexibot_frontend  | AttributeError: st.session_state has no attribute "last_request". Did you forget to initialize it? More info: https://docs.streamlit.io/develop/concepts/architecture/session-state#initialization
+lexibot_frontend  |   Stopping...
+lexibot_frontend exited with code 137 (restarting)
+lexibot_frontend  |
+lexibot_frontend  | Collecting usage statistics. To deactivate, set browser.gatherUsageStats to false.
+lexibot_frontend  |
+lexibot_frontend  |
+lexibot_frontend  |   You can now view your Streamlit app in your browser.
+lexibot_frontend  |
+lexibot_frontend  |   URL: http://0.0.0.0:8501
+lexibot_frontend  |
+lexibot_frontend  |   Stopping...
+lexibot_frontend exited with code 137
+lexibot_backend   | INFO:     Shutting down
+lexibot_backend   | INFO:     Waiting for application shutdown.
+lexibot_backend   | 🛑 API stopped
+lexibot_backend   | INFO:     Application shutdown complete.
+lexibot_backend   | INFO:     Finished server process [8]
+lexibot_backend exited with code 137
+PS C:\Users\MSI\LEXIBOT_PRO\devops>

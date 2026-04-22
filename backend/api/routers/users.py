@@ -4,8 +4,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List
 
-from api.dependencies.auth import current_active_user
-from models.user_models import User, Permission, Appointment, AppointmentStatus
+from auth.auth_config import current_active_user
+from models.models import User, Permission, Appointment, AppointmentStatus
 from schemas.calendar import AppointmentRead
 from database.session import get_async_session
 

@@ -3,13 +3,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List
 import datetime
-from dateutil import parser
+import uuid
 
 # Imports de la sécurité et de la DB
-from database.config import get_async_session
+from database.session import get_async_session
 from auth.auth_config import current_active_user
-from models.user_models import User, Appointment, AppointmentStatus, UserRole
-from schemas.calendar import AppointmentRequest, AppointmentRead, AppointmentUpdateStatus # Ajout de AppointmentUpdateStatus
+from models.models import User, Appointment, AppointmentStatus, UserRole
+from schemas.users_schema import AppointmentRequest, AppointmentRead, AppointmentUpdate
 
 # ----------------------------------------------------------------------
 # Router pour la gestion des Rendez-vous côté Client
@@ -38,21 +38,15 @@ async def request_appointment(
     Permet à un client de soumettre une demande formelle de rendez-vous.
     Le statut initial est PENDING (en attente).
     """
-    
     try:
-        preferred_date = parser.parse(request_data.preferred_date).replace(tzinfo=None)
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Format de date invalide. Veuillez utiliser un format ISO 8601 (ex: YYYY-MM-DD HH:MM)."
-        )
-
-    try:
+        # Pydantic gère déjà la conversion datetime. On enlève juste la timezone si présente.
+        preferred_date = request_data.preferred_date.replace(tzinfo=None)
+        
         new_appointment = Appointment(
-            user_id=user.id,
-            request_timestamp=datetime.datetime.now(),
+            client_id=user.id,  # CORRECTION VITAL : C'est client_id dans ton modèle, pas user_id
             preferred_date=preferred_date,
-            reason=request_data.reason,
+            subject=request_data.subject,
+            description=request_data.reason,
             status=AppointmentStatus.PENDING
         )
         
@@ -60,10 +54,11 @@ async def request_appointment(
         await session.commit()
         await session.refresh(new_appointment)
         
-        return AppointmentRead.from_orm(new_appointment)
+        return new_appointment
     
     except Exception as e:
         print(f"Erreur lors de la création du RDV: {e}")
+        await session.rollback()
         raise HTTPException(status_code=500, detail="Erreur interne lors de l'enregistrement du RDV.")
 
 # ----------------------------------------------------------------------
@@ -73,7 +68,7 @@ async def request_appointment(
 @router.get(
     "/mine",
     response_model=List[AppointmentRead],
-    summary="Voir tous mes rendez-vous (y compris en attente et passés)"
+    summary="Voir tous mes rendez-vous"
 )
 async def get_my_appointments(
     user: User = Depends(current_active_user),
@@ -83,11 +78,11 @@ async def get_my_appointments(
     try:
         result = await session.execute(
             select(Appointment)
-            .where(Appointment.user_id == user.id)
+            .where(Appointment.client_id == user.id)
             .order_by(Appointment.preferred_date.desc())
         )
         appointments = result.scalars().all()
-        return [AppointmentRead.from_orm(appt) for appt in appointments]
+        return appointments
     except Exception as e:
         print(f"Erreur lors de la récupération de mes RDV: {e}")
         raise HTTPException(status_code=500, detail="Erreur interne serveur.")
@@ -102,7 +97,8 @@ async def get_my_appointments(
     summary="Annuler une de mes demandes de RDV"
 )
 async def cancel_my_appointment(
-    appointment_id: int = Path(..., description="ID du rendez-vous à annuler"),
+    # CORRECTION VITAL : appointment_id doit être un UUID, pas un int
+    appointment_id: uuid.UUID = Path(..., description="ID du rendez-vous à annuler"),
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session)
 ):
@@ -110,37 +106,33 @@ async def cancel_my_appointment(
     Permet à l'utilisateur de changer le statut d'un de ses propres RDV en CANCELLED.
     """
     try:
-        # 1. Trouver le RDV et s'assurer qu'il appartient à cet utilisateur
         result = await session.execute(
             select(Appointment)
             .where(Appointment.id == appointment_id)
-            .where(Appointment.user_id == user.id)
+            .where(Appointment.client_id == user.id)
         )
         appointment = result.scalar_one_or_none()
         
         if appointment is None:
-            # On renvoie 404 même si le RDV existe mais appartient à qqn d'autre (sécurité)
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rendez-vous non trouvé ou vous n'avez pas la permission.")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rendez-vous non trouvé ou accès refusé.")
 
-        # 2. Vérifier si l'annulation est possible (ex: pas si déjà terminé)
-        if appointment.status in [AppointmentStatus.COMPLETED, AppointmentStatus.REJECTED]:
+        if appointment.status in [AppointmentStatus.COMPLETED, AppointmentStatus.CANCELLED]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Impossible d'annuler un rendez-vous avec le statut: {appointment.status.value}"
             )
 
-        # 3. Mettre à jour le statut
         appointment.status = AppointmentStatus.CANCELLED
         
-        # 4. Sauvegarder
         session.add(appointment)
         await session.commit()
         await session.refresh(appointment)
 
-        return AppointmentRead.from_orm(appointment)
+        return appointment
         
     except HTTPException:
         raise
     except Exception as e:
         print(f"Erreur client cancel appointment: {e}")
+        await session.rollback()
         raise HTTPException(status_code=500, detail="Erreur interne serveur.")

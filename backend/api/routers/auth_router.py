@@ -2,8 +2,8 @@
 from fastapi import APIRouter
 
 # Imports des schémas et de la configuration de sécurité
-from backend.core.security import fastapi_users, auth_backend
-from backend.schemas.user_schemas import UserRead, UserCreate, UserUpdate
+from auth.auth_config import fastapi_users, auth_backend
+from schemas.users_schema import UserRead, UserCreate, UserUpdate
 
 # --- Router d'Authentification (Connexion / Déconnexion) ---
 # Ceci crée les routes /login et /logout
@@ -39,3 +39,5 @@ password_reset_router.include_router(
     prefix="/forgot-password",
     tags=["Auth"]
 )
+# Alias pour main.py
+router = auth_router

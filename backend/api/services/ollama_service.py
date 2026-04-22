@@ -1,12 +1,12 @@
-# backend/services/ollama_service.py
+#ollama_service.py
 from typing import List, Dict, Any, Optional
 import requests
 from fastapi import HTTPException, status
 import json
 
 # Imports de la configuration et du logging
-from backend.core.config import settings
-from backend.core.logging_config import ollama_logger, logger
+from core.config import settings
+from core.logging_config import ollama_logger, logger
 
 class OllamaService:
     """
@@ -14,10 +14,12 @@ class OllamaService:
     """
     
     def __init__(self):
+        # IMPORTANT: On s'assure que l'URL pointe vers l'hôte Windows depuis Docker
         self.base_url = settings.OLLAMA_API_BASE_URL
         self.model = settings.OLLAMA_MODEL
-        self.endpoint = f"{self.base_url}/api/generate"
-        self.timeout = 30 # Timeout en secondes pour les requêtes LLM
+        # On change /api/generate par /api/chat pour supporter le format "messages"
+        self.endpoint = f"{self.base_url}/api/chat"
+        self.timeout = 45 # Augmenté à 45s pour laisser le temps au GPU de charger le modèle
 
         # Vérification rapide de l'accessibilité de l'API au démarrage
         self.check_api_status()
@@ -36,7 +38,6 @@ class OllamaService:
         except requests.exceptions.ConnectionError:
             error_msg = f"Impossible de se connecter à Ollama à l'URL : {self.base_url}. Le service est-il démarré ?"
             logger.critical(error_msg)
-            # Ne pas lever d'exception ici pour permettre à l'API de démarrer
             return False
         except Exception as e:
             logger.error(f"Erreur inconnue lors de la vérification Ollama : {e}")
@@ -44,13 +45,13 @@ class OllamaService:
 
     def generate_response(self, prompt: str, history: Optional[List[Dict[str, str]]] = None) -> str:
         """
-        Envoie une requête de génération de texte à Ollama.
+        Envoie une requête de génération de texte à Ollama au format Chat.
 
         :param prompt: Le nouveau message de l'utilisateur.
         :param history: L'historique des messages (optionnel).
         :return: La réponse générée par le modèle.
         """
-        # Construction des messages pour l'API Ollama
+        # Construction des messages pour l'API Ollama (Format CHAT)
         messages = history if history else []
         messages.append({"role": "user", "content": prompt})
         
@@ -68,13 +69,12 @@ class OllamaService:
                 json=payload,
                 timeout=self.timeout,
             )
-            response.raise_for_status() # Lève une erreur pour les statuts 4xx/5xx
+            response.raise_for_status() 
 
-            # L'API Ollama /api/generate pour les requêtes non-streamées retourne un objet JSON
             data = response.json()
             
-            # Extraction du message du modèle
-            full_response = data.get('message', {}).get('content', 'Erreur de réponse du modèle.')
+            # FIX: Pour /api/chat, la réponse est dans ['message']['content']
+            full_response = data.get('message', {}).get('content', 'Erreur: Contenu vide.')
             
             ollama_logger.info(f"Réponse Ollama (longueur): {len(full_response)} chars.")
             
@@ -83,13 +83,12 @@ class OllamaService:
         except requests.exceptions.RequestException as e:
             error_detail = f"Erreur de communication avec Ollama: {e}"
             ollama_logger.error(error_detail)
-            # Renvoyer une erreur 503 si le service Ollama est inaccessible ou échoue
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Le service LLM (Ollama) est indisponible ou a échoué. Veuillez vérifier la console."
+                detail="Le service LLM (Ollama) est indisponible. Vérifiez host.docker.internal."
             )
         except json.JSONDecodeError:
-            error_detail = f"Erreur de décodage JSON de la réponse Ollama. Réponse brute: {response.text[:100]}"
+            error_detail = f"Erreur de décodage JSON. Réponse brute: {response.text[:100]}"
             ollama_logger.error(error_detail)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -100,7 +99,7 @@ class OllamaService:
             ollama_logger.error(error_detail)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Erreur interne serveur lors de la génération de la réponse LLM."
+                detail="Erreur interne serveur lors de la génération."
             )
 
 # Instance du service LLM pour l'injection de dépendances
