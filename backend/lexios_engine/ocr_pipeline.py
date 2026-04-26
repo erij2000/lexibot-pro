@@ -35,7 +35,33 @@ except ImportError:
     HAS_HEIF = False
 
 from config import settings
-from doc_detector import DocumentDetector
+from core_embedder import count_tokens
+try:
+    from doc_detector import DocumentDetector
+except ImportError:
+    class DetResult:
+        confidence = 0.5
+        doc_type = "Inconnu"
+        category = "Général"
+    class DocumentDetector:
+        @staticmethod
+        def detect(text, filename):
+            return DetResult()
+
+import threading
+_surya_lock = threading.Lock()
+
+def safe_json_parse(text: str) -> Dict[str, Any]:
+    try:
+        return json.loads(text)
+    except:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except:
+                pass
+        return {}
 
 log = logging.getLogger("lexios.ocr")
 SUPPORTED_PDF = {".pdf"}
@@ -159,7 +185,8 @@ class TextNormalizer:
 
     @staticmethod
     def extract_article_number(text: str) -> Optional[str]:
-        m = re.search(r'(?:Article|Art\.?|المادة)\s*(\d+)', text, re.IGNORECASE)
+        # More robust regex for various legal formats
+        m = re.search(r'(?:Article|Art\.?|art\.?|المادة|الفصل)\s*(?:n°|numéro|number|رقم)?\s*(\d+)', text, re.IGNORECASE)
         if m:
             return m.group(1)
         return None
@@ -173,7 +200,8 @@ class TextChunker:
         assert overlap < chunk_size
 
     def chunk(self, text: str, uid: str, page_breaks: Optional[List[int]] = None) -> List[Chunk]:
-        if len(text) <= self.chunk_size:
+        text_tokens = count_tokens(text)
+        if text_tokens <= self.chunk_size:
             normalized = self.normalizer.normalize(text)
             return [Chunk(
                 text=text,
@@ -195,19 +223,19 @@ class TextChunker:
         current_size = 0
         char_offset = 0
         chunk_idx = 0
-        current_article_id = uid
+        current_article_id = f"{uid}_art_0"
         article_counter = 0
 
         for para, para_start, para_end in paragraphs:
-            para_len = len(para)
+            para_tokens = count_tokens(para)
 
             section = self.normalizer.detect_section(para)
             art_num = self.normalizer.extract_article_number(para) if section == "header" else None
             if art_num:
                 article_counter += 1
-                current_article_id = f"{uid}_art_{art_num}"
+                current_article_id = f"{uid}_art_{hashlib.md5(art_num.encode()).hexdigest()[:8]}"
 
-            if para_len > self.chunk_size:
+            if para_tokens > self.chunk_size:
                 if current_texts:
                     chunk = self._create_chunk(
                         current_texts, current_positions, char_offset,
@@ -229,7 +257,7 @@ class TextChunker:
                 current_size = 0
                 continue
 
-            if current_size + para_len > self.chunk_size and current_texts:
+            if current_size + para_tokens > self.chunk_size and current_texts:
                 chunk = self._create_chunk(
                     current_texts, current_positions, char_offset,
                     chunk_idx, uid, page_breaks, current_article_id
@@ -240,13 +268,14 @@ class TextChunker:
                 overlap_texts, overlap_positions = self._compute_overlap(current_texts, current_positions)
                 current_texts = overlap_texts + [para]
                 current_positions = overlap_positions + [(para_start, para_end)]
-                current_size = sum(len(t) for t in current_texts)
+                current_size = sum(count_tokens(t) for t in current_texts)
                 char_offset = overlap_positions[0][0] if overlap_positions else para_start
             else:
                 current_texts.append(para)
                 current_positions.append((para_start, para_end))
-                current_size += para_len
-
+                current_size += para_tokens
+                char_offset = char_offset or para_start
+        
         if current_texts:
             chunk = self._create_chunk(
                 current_texts, current_positions, char_offset,
@@ -278,8 +307,8 @@ class TextChunker:
         local_idx = 0
 
         for sent in sentences:
-            sent_len = len(sent)
-            if len(current_text) + sent_len > self.chunk_size and current_text:
+            sent_tokens = count_tokens(sent)
+            if count_tokens(current_text) + sent_tokens > self.chunk_size and current_text:
                 normalized = self.normalizer.normalize(current_text)
                 chunks.append(Chunk(
                     text=current_text.strip(),
@@ -374,6 +403,7 @@ class LegalOCR:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_OCR)
         self._session: Optional[aiohttp.ClientSession] = None
+        self._llm_semaphore = asyncio.Semaphore(5)
         self.chunker = TextChunker(
             chunk_size=settings.OCR_CHUNK_SIZE,
             overlap=settings.OCR_CHUNK_OVERLAP
@@ -397,15 +427,16 @@ class LegalOCR:
         return self._marker_models
 
     def _get_surya(self):
-        if self._surya_models is None and HAS_SURYA:
-            log.info("Chargement Surya...")
-            self._surya_models = {
-                "det_processor": load_det_processor(),
-                "det_model": load_det_model(),
-                "rec_model": load_rec_model(),
-                "rec_processor": load_rec_processor()
-            }
-        return self._surya_models
+        with _surya_lock:
+            if self._surya_models is None and HAS_SURYA:
+                log.info("Chargement Surya...")
+                self._surya_models = {
+                    "det_processor": load_det_processor(),
+                    "det_model": load_det_model(),
+                    "rec_model": load_rec_model(),
+                    "rec_processor": load_rec_processor()
+                }
+            return self._surya_models
 
     def _detect_language(self, text: str) -> str:
         if not text:
@@ -449,12 +480,12 @@ class LegalOCR:
             log.error(f"Topology error: {e}")
             return DriveContext([], "unknown", "Général", "général")
 
-    def _compute_uid(self, content: str) -> str:
-        return hashlib.sha256(content[:5000].encode()).hexdigest()[:16]
+    def _compute_uid(self, content: str, file_path: str) -> str:
+        return hashlib.sha256((content[:5000] + file_path).encode()).hexdigest()[:16]
 
     def _extract_entities_simple(self, text: str) -> Dict[str, Any]:
         entities = {"articles": [], "dates": [], "montants": []}
-        article_pattern = r'(Art\.?\s*\d+[\s\w]*(?:Code|Loi|COC|CP|CC))'
+        article_pattern = r'(Art(?:icle)?\.?\s*\d+|\bالمادة\s*\d+)'
         entities["articles"] = list(set(re.findall(article_pattern, text, re.IGNORECASE)))[:5]
         date_pattern = r'\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})\b'
         entities["dates"] = list(set(re.findall(date_pattern, text)))[:3]
@@ -463,54 +494,56 @@ class LegalOCR:
         return entities
 
     async def _call_llm_with_retry(self, text: str, context: str, max_retries: int = 2) -> Dict[str, Any]:
-        prompt = f"""Analyse ce texte juridique tunisien. Retourne UNIQUEMENT JSON.
+        async with self._llm_semaphore:
+            prompt = f"""Analyse ce texte juridique tunisien. Retourne UNIQUEMENT JSON.
+    
+    Contexte: {context}
+    Texte: {text[:2000]}
+    
+    Format: {{"classification": "...", "parties": [], "articles_cites": [], "dates_importantes": [], "resume": "", "mots_cles": []}}"""
 
-Contexte: {context}
-Texte: {text[:2000]}
+            for attempt in range(max_retries):
+                try:
+                    session = await self._get_session()
+                    if settings.LLM_PROVIDER == "groq" and settings.GROQ_API_KEY:
+                        payload = {
+                            "model": settings.GROQ_MODEL,
+                            "messages": [
+                                {"role": "system", "content": "Expert juridique. JSON uniquement."},
+                                {"role": "user", "content": prompt}
+                            ],
+                            "response_format": {"type": "json_object"},
+                            "temperature": 0.1
+                        }
+                        headers = {"Authorization": f"Bearer {settings.GROQ_API_KEY}"}
+                        async with session.post("https://api.groq.com/openai/v1/chat/completions",
+                                                json=payload, headers=headers) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                content = data["choices"][0]["message"]["content"]
+                                return safe_json_parse(content)
+                    else:
+                        payload = {
+                            "model": settings.OLLAMA_MODEL,
+                            "messages": [
+                                {"role": "system", "content": "Expert juridique. JSON uniquement."},
+                                {"role": "user", "content": prompt}
+                            ],
+                            "format": "json",
+                            "stream": False,
+                            "options": {"temperature": 0.1}
+                        }
+                        async with session.post(f"{settings.OLLAMA_HOST}/api/chat", json=payload) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                content = data["message"]["content"]
+                                return safe_json_parse(content)
+                except Exception as e:
+                    log.warning(f"LLM attempt {attempt+1} failed: {e}")
+                    await asyncio.sleep(1)
 
-Format: {{"classification": "...", "parties": [], "articles_cites": [], "dates_importantes": [], "resume": "", "mots_cles": []}}"""
-
-        for attempt in range(max_retries):
-            try:
-                session = await self._get_session()
-                if settings.LLM_PROVIDER == "groq" and settings.GROQ_API_KEY:
-                    payload = {
-                        "model": settings.GROQ_MODEL,
-                        "messages": [
-                            {"role": "system", "content": "Expert juridique. JSON uniquement."},
-                            {"role": "user", "content": prompt}
-                        ],
-                        "response_format": {"type": "json_object"},
-                        "temperature": 0.1
-                    }
-                    headers = {"Authorization": f"Bearer {settings.GROQ_API_KEY}"}
-                    async with session.post("https://api.groq.com/openai/v1/chat/completions",
-                                            json=payload, headers=headers) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            content = data["choices"][0]["message"]["content"]
-                            return json.loads(content)
-                else:
-                    payload = {
-                        "model": settings.OLLAMA_MODEL,
-                        "messages": [
-                            {"role": "system", "content": "Expert juridique. JSON uniquement."},
-                            {"role": "user", "content": prompt}
-                        ],
-                        "format": "json",
-                        "stream": False,
-                        "options": {"temperature": 0.1}
-                    }
-                    async with session.post(f"{settings.OLLAMA_HOST}/api/chat", json=payload) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            content = data["message"]["content"]
-                            content = content.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-                            return json.loads(content)
-            except Exception as e:
-                log.warning(f"LLM attempt {attempt+1} failed: {e}")
-                await asyncio.sleep(1)
-        return {}
+            log.warning("LLM extraction returned empty after all retries")
+            return {}
 
     async def process_file(self, file_path: Path) -> Optional[LexiosDoc]:
         async with self.semaphore:
@@ -533,11 +566,32 @@ Format: {{"classification": "...", "parties": [], "articles_cites": [], "dates_i
                         text, _, meta = converter(str(path), models)
                         engine = "marker"
                         pages = meta.get("num_pages", 1)
-                        avg_page_len = len(text) // pages if pages > 1 else len(text)
-                        page_breaks = [i * avg_page_len for i in range(1, pages)]
+                        page_breaks = [m.start() for m in re.finditer(r"(?i)\bPage\s+\d+\b", text)]
+                        if len(page_breaks) < pages - 1:
+                            avg_page_len = len(text) // pages if pages > 1 else len(text)
+                            page_breaks = [i * avg_page_len for i in range(1, pages)]
                     except Exception as e:
                         log.error(f"Marker failed: {e}")
-                        return None
+                        try:
+                            import pdfplumber
+                            text_parts = []
+                            with pdfplumber.open(path) as pdf:
+                                pages = len(pdf.pages)
+                                for p in pdf.pages:
+                                    t = p.extract_text()
+                                    if t: text_parts.append(t)
+                            text = "\n".join(text_parts)
+                            engine = "pdfplumber_fallback"
+                            page_breaks = [m.start() for m in re.finditer(r"(?i)\bPage\s+\d+\b", text)]
+                            if len(page_breaks) < pages - 1:
+                                avg_page_len = len(text) // pages if pages > 1 else len(text)
+                                page_breaks = [i * avg_page_len for i in range(1, pages)]
+                        except ImportError:
+                            log.error("pdfplumber not available for fallback")
+                            return None
+                        except Exception as pdf_e:
+                            log.error(f"pdfplumber fallback failed: {pdf_e}")
+                            return None
                 elif ext in SUPPORTED_IMAGE and HAS_SURYA:
                     try:
                         img = Image.open(path).convert("RGB")
@@ -565,7 +619,7 @@ Format: {{"classification": "...", "parties": [], "articles_cites": [], "dates_i
                 drive = self._extract_topology(path)
                 lang = self._detect_language(text)
                 det = DocumentDetector.detect(text, path.name)
-                uid = self._compute_uid(text)
+                uid = self._compute_uid(text, str(path))
 
                 chunks = self.chunker.chunk(text, uid, page_breaks)
                 entities = self._extract_entities_simple(text)
@@ -623,7 +677,11 @@ Format: {{"classification": "...", "parties": [], "articles_cites": [], "dates_i
         files = [f for f in files if not f.name.startswith(".")]
 
         log.info(f"OCR démarré: {len(files)} fichiers")
-        results = await asyncio.gather(*[self.process_file(f) for f in files], return_exceptions=True)
+        sem = asyncio.Semaphore(10)
+        async def process_with_sem(f):
+            async with sem:
+                return await self.process_file(f)
+        results = await asyncio.gather(*[process_with_sem(f) for f in files], return_exceptions=True)
         docs = [r for r in results if isinstance(r, LexiosDoc)]
         log.info(f"OCR terminé: {len(docs)}/{len(files)} succès")
         return docs

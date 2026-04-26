@@ -1,32 +1,40 @@
 """
-lightrag_bridge.py — Lexios LightRAG Bridge v2 (CORRIGÉ)
-=========================================================
-Intégration LightRAG comme couche de contexte (PAS de réponse).
+lightrag_bridge.py — Lexios LightRAG Bridge v5 (Clean Architecture)
+====================================================================
+GRAPH CONTEXT LAYER ONLY.
 
-Architecture corrigée:
-  Layer 1 → Top chunks (BM25 + vector + rerank) = contexte précis
-  Layer 2 → Graph insights (entités + relations) = contexte relationnel
-            ↓
-       CONTEXT FUSION (chunks + graph_facts)
-            ↓
-       LLM UNIQUE (Groq, 1 seule génération)
+Rules:
+- NO scoring influence on BM25 / Chroma / Reranker
+- NO LLM calls inside graph logic (only via GroqLLMWrapper for LightRAG internals)
+- NO string parsing ambiguity — structured fallback with JSON priority
+- NO embedding duplication — uses global RTX2050SafeEmbedder
 
-LightRAG est OPTIONNEL et déclenché par trigger intelligent.
+Architecture:
+  Query → Trigger Analysis → (optional) Graph Context Extraction
+  → returns GraphContext dataclass
+  → consumed ONLY in final context fusion (rag_service.py)
 """
 
 from __future__ import annotations
 
-import os
-import asyncio
+import re
+import json
+import time
 import logging
+import unicodedata
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple, Callable
+import hashlib
+import asyncio
+from typing import Optional, Dict, Any, List, Callable
 from dataclasses import dataclass, field
-from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
 from config import settings
+
+# FIXED: break circular dependency — import from core layers
+from core_llm import GroqLLMWrapper
+from core_embedder import RTX2050SafeEmbedder
 
 log = logging.getLogger("lexios.lightrag")
 
@@ -47,7 +55,7 @@ except ImportError:
 
 @dataclass
 class GraphContext:
-    """Contexte extrait du graphe LightRAG (PAS une réponse LLM)."""
+    """Structured graph context — NO raw LLM output here."""
     facts: List[str] = field(default_factory=list)
     entities: List[str] = field(default_factory=list)
     relations: List[str] = field(default_factory=list)
@@ -56,19 +64,18 @@ class GraphContext:
     mode: str = "disabled"
     timing_ms: float = 0.0
 
-    def to_context_string(self, max_length: int = 2000) -> str:
-        """Convertit en string injectable dans le prompt LLM."""
+    def to_context_string(self, max_length: int = 1500) -> str:
         parts = []
         if self.facts:
-            parts.append("FAITS RELATIONNELS DU GRAPHE:")
+            parts.append("FAITS RELATIONNELS:")
             for f in self.facts[:10]:
                 parts.append(f"  - {f}")
         if self.entities:
-            parts.append(f"\nENTITÉS IDENTIFIÉES: {', '.join(self.entities[:15])}")
+            parts.append(f"\nENTITÉS: {', '.join(self.entities[:15])}")
         if self.relations:
             parts.append(f"\nRELATIONS: {', '.join(self.relations[:10])}")
         if self.relevant_chunks:
-            parts.append("\nEXTRAITS DE DOCUMENTS (via graphe):")
+            parts.append("\nEXTRAITS:")
             for c in self.relevant_chunks[:5]:
                 parts.append(f"  • {c[:300]}")
 
@@ -78,7 +85,6 @@ class GraphContext:
 
 @dataclass
 class TriggerAnalysis:
-    """Analyse de la question pour décider si LightRAG est pertinent."""
     use_lightrag: bool = False
     reason: str = ""
     confidence: float = 0.0
@@ -86,46 +92,47 @@ class TriggerAnalysis:
 
 
 # ============================================================================
-# TRIGGER INTELLIGENT (LightRAG optionnel)
+# TRIGGER INTELLIGENT
 # ============================================================================
 
 class LightRAGTrigger:
-    """
-    Détermine si LightRAG doit être activé pour une question donnée.
-
-    Règles:
-    - Questions relationnelles → LightRAG activé
-    - Questions factuelles simples → LightRAG désactivé (économie ressources)
-    - Questions multi-documents → LightRAG activé
-    """
+    """Determines if LightRAG should activate. Threshold = 0.5."""
 
     RELATIONAL_KEYWORDS = {
         "fr": [
-            "relation", "lien", "lié", "interagit", "interagissent",
-            "connecté", "rapport", "dépend", "influence", "impact",
-            "compar", "différence", "similitude", "oppose", "versus",
-            "tous les", "liste des", "ensemble", "cumul", "cumulatif",
-            "en lien avec", "par rapport à", "concernant", "portant sur",
-            "articles liés", "dispositions connexes", "textes relatifs",
+            "relation", "lien", "lié", "interagit", "connecté", "rapport",
+            "dépend", "influence", "impact", "compar", "différence",
+            "similitude", "tous les", "liste des", "ensemble", "cumul",
+            "articles liés", "dispositions connexes", "pourquoi", "comment",
+            "analyse", "synthèse",
         ],
         "ar": [
-            "علاقة", "مرتبط", "متصل", "يتفاعل", "يؤثر", "تأثير",
-            "فرق", "اختلاف", "تشابه", "مقارنة", "جميع", "كل",
-            "قائمة", "مجموع", "تراكمي", "فيما يتعلق", "بخصوص",
+            "علاقة", "مرتبط", "متصل", "يتفاعل", "يؤثر", "فرق", "اختلاف",
+            "تشابه", "مقارنة", "جميع", "قائمة", "تراكمي", "لماذا", "كيف",
+            "حلل", "تلخيص",
         ]
     }
 
     MULTI_HOP_PATTERNS = [
-        r"article\s+\d+.+article\s+\d+",  # Compare 2 articles
-        r"(code|loi).+(code|loi)",  # Inter-code
-        r"(bail|contrat|vente).+(obligations|pénal|civil)",  # Cross-domain
+        re.compile(r"article\s+\d+.+article\s+\d+"),
+        re.compile(r"(code|loi).+(code|loi)"),
+        re.compile(r"(bail|contrat|vente).+(obligations|pénal|civil)"),
+    ]
+
+    FACTUAL_PATTERNS = [
+        re.compile(r"^quel\s+est\s+l\'article"),
+        re.compile(r"^article\s+\d+"),
+        re.compile(r"^définition"),
+        re.compile(r"^qu\'est-ce"),
+        re.compile(r"^c\'est\s+quoi"),
+        re.compile(r"^donne\s+moi"),
+        re.compile(r"^cite"),
     ]
 
     @classmethod
     def analyze(cls, question: str) -> TriggerAnalysis:
-        """Analyse la question et décide d'activer LightRAG."""
         if not settings.LIGHTRAG_ENABLED:
-            return TriggerAnalysis(use_lightrag=False, reason="LightRAG désactivé dans config")
+            return TriggerAnalysis(use_lightrag=False, reason="LightRAG disabled")
 
         q_lower = question.lower()
         ar_count = sum(1 for c in question if "\u0600" <= c <= "\u06FF")
@@ -134,177 +141,288 @@ class LightRAGTrigger:
         score = 0.0
         reasons = []
 
-        # 1. Mots-clés relationnels
         keywords = cls.RELATIONAL_KEYWORDS.get(lang, cls.RELATIONAL_KEYWORDS["fr"])
         matched = [k for k in keywords if k in q_lower]
         if matched:
             score += len(matched) * 0.15
-            reasons.append(f"mots-clés relationnels: {matched[:3]}")
+            reasons.append(f"relational_keywords: {matched[:3]}")
 
-        # 2. Patterns multi-hop (regex)
-        import re
+        if "article" in q_lower or "chapitre" in q_lower:
+            score += 0.3
+            reasons.append("multi-articles detected")
+            
+        if any(w in q_lower for w in [" et ", " ou ", "comparé", " contre "]):
+            score += 0.25
+            reasons.append("comparative logic")
+
         for pattern in cls.MULTI_HOP_PATTERNS:
-            if re.search(pattern, q_lower):
+            if pattern.search(q_lower):
                 score += 0.4
-                reasons.append("pattern multi-hop détecté")
+                reasons.append("multi-hop detected")
                 break
 
-        # 3. Longueur question (questions complexes)
-        if len(question.split()) > 15:
-            score += 0.1
-            reasons.append("question complexe (longue)")
+        word_count = len(question.split())
+        if word_count > 18:
+            score += 1.0
+            reasons.append("long query")
+        elif word_count > 12:
+            score += 0.5
+            reasons.append("medium query")
 
-        # 4. Questions factuelles simples → désactiver
-        factual_patterns = [
-            r"^quel\s+est\s+l\'article",
-            r"^article\s+\d+",
-            r"^définition",
-            r"^qu\'est-ce",
-            r"^c\'est\s+quoi",
-        ]
-        for pattern in factual_patterns:
-            if re.match(pattern, q_lower):
+        for pattern in cls.FACTUAL_PATTERNS:
+            if pattern.match(q_lower):
                 score -= 0.3
-                reasons.append("question factuelle simple → Lexios suffit")
+                reasons.append("factual pattern")
                 break
 
-        # Seuil de décision
-        threshold = 0.35
+        threshold = 0.5
         use_lightrag = score >= threshold
 
-        # Mode suggéré
         if score > 0.7:
-            suggested_mode = "hybrid"
+            mode = "hybrid"
         elif score > 0.5:
-            suggested_mode = "local"
+            mode = "local"
         else:
-            suggested_mode = "global" if use_lightrag else "disabled"
+            mode = "global" if use_lightrag else "disabled"
 
         return TriggerAnalysis(
             use_lightrag=use_lightrag,
-            reason="; ".join(reasons) if reasons else "question standard",
-            confidence=min(score, 1.0),
-            suggested_mode=suggested_mode
+            reason="; ".join(reasons) if reasons else "standard",
+            confidence=min(score / 1.5, 1.0),
+            suggested_mode=mode,
         )
 
 
 # ============================================================================
-# EMBEDDING BRIDGE (Reuse BGE-M3)
+# SAFE GRAPH PARSER
 # ============================================================================
 
-class LexiosEmbeddingBridge:
-    """Réutilise votre RTX2050SafeEmbedder pour LightRAG."""
+class GraphContextParser:
+    """
+    Robust parser for LightRAG raw context strings.
+    NO LLM calls — pure regex + structured fallback.
+    Tries JSON first, then structured text parsing.
+    """
 
-    def __init__(self, embedder: Any = None):
+    @classmethod
+    def parse(cls, raw: str) -> Dict[str, List[str]]:
+        if not raw or not raw.strip():
+            return {"facts": [], "entities": [], "relations": [], "chunks": []}
+
+        # Try JSON first (if LightRAG returns JSON or structured output)
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return {
+                    "facts": cls._ensure_list(data.get("facts", [])),
+                    "entities": cls._ensure_list(data.get("entities", [])),
+                    "relations": cls._ensure_list(data.get("relations", [])),
+                    "chunks": cls._ensure_list(data.get("chunks", data.get("context", []))),
+                }
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Structured text parsing with section awareness
+        facts: List[str] = []
+        entities: List[str] = []
+        relations: List[str] = []
+        chunks: List[str] = []
+        
+        lines = raw.splitlines()
+        current_section: Optional[str] = None
+        
+        for line in lines:
+            line_stripped = line.strip()
+            if not line_stripped:
+                continue
+            
+            lower = line_stripped.lower()
+            # Detect section headers
+            if any(h in lower for h in ["fact", "fait", "facts:", "faits:", "faits relationnels"]):
+                current_section = "facts"
+                continue
+            elif any(h in lower for h in ["entit", "entity", "entities:", "entités:", "entités identifiées"]):
+                current_section = "entities"
+                continue
+            elif any(h in lower for h in ["relation", "relations:", "liens", "relations identifiées"]):
+                current_section = "relations"
+                continue
+            elif any(h in lower for h in ["chunk", "extrait", "text", "source", "contexte", "passage"]):
+                current_section = "chunks"
+                continue
+            
+            # Parse bullet points
+            if line_stripped.startswith(("-", "•", "*", "→", "->", "▸", "›")):
+                content = line_stripped[1:].strip()
+                if current_section == "facts":
+                    facts.append(content)
+                elif current_section == "entities":
+                    entities.append(content)
+                elif current_section == "relations":
+                    relations.append(content)
+                elif current_section == "chunks":
+                    chunks.append(content)
+                else:
+                    # Default to facts if no section detected
+                    if len(content) > 10:
+                        facts.append(content)
+            elif current_section == "relations" and ("->" in line_stripped or "→" in line_stripped or "--" in line_stripped):
+                relations.append(line_stripped)
+            elif current_section == "entities" and 3 < len(line_stripped) < 100:
+                entities.append(line_stripped)
+            elif current_section == "chunks":
+                chunks.append(line_stripped)
+            else:
+                # Treat as fact if it's a substantial sentence
+                if len(line_stripped) > 20:
+                    facts.append(line_stripped)
+        
+        # Fallback: if still mostly empty, extract sentences as facts and raw as chunk
+        if not any([facts, entities, relations]):
+            sentences = re.split(r"(?<=[.!?])\s+", raw[:2000])
+            facts = [s.strip() for s in sentences if len(s.strip()) > 20][:10]
+            chunks = [raw[:500]] if not chunks else chunks
+        
+        # Deduplicate with Unicode-aware normalization
+        seen = set()
+        unique_facts = []
+        for f in facts:
+            # Normalize Unicode (handles accents, etc.) and lowercase
+            norm = unicodedata.normalize("NFKD", f).lower().strip()
+            # Remove only punctuation, preserve word characters (including Arabic)
+            norm = re.sub(r"[^\w\s\u0600-\u06FF]", "", norm)
+            if norm and norm not in seen:
+                seen.add(norm)
+                unique_facts.append(f)
+
+        seen_ent = set()
+        unique_entities = []
+        for e in entities:
+            # Same Unicode-aware normalization
+            norm = unicodedata.normalize("NFKD", e).lower().strip()
+            norm = re.sub(r"[^\w\s]", "", norm, flags=re.UNICODE)
+            if norm and norm not in seen_ent:
+                seen_ent.add(norm)
+                unique_entities.append(e)
+
+        return {
+            "facts": unique_facts[:15],
+            "entities": unique_entities[:15],
+            "relations": list(dict.fromkeys(relations))[:10],
+            "chunks": list(dict.fromkeys(chunks))[:5] or [raw[:500]],
+        }
+    
+    @staticmethod
+    def _ensure_list(val):
+        if val is None:
+            return []
+        if isinstance(val, list):
+            return val
+        if isinstance(val, str):
+            return [val]
+        return []
+
+
+# ============================================================================
+# EMBEDDING ADAPTER (thin wrapper around global embedder)
+# ============================================================================
+
+class LightRAGEmbedAdapter:
+    """
+    Thin adapter — NO model duplication.
+    Uses global RTX2050SafeEmbedder directly.
+    """
+
+    def __init__(self, embedder: RTX2050SafeEmbedder):
         self.embedder = embedder
         self.dimension = settings.EMBED_DIM
 
     async def encode(self, texts: List[str]) -> np.ndarray:
-        if self.embedder is None:
-            from sentence_transformers import SentenceTransformer
-            model = SentenceTransformer(settings.EMBED_MODEL, device=settings.EMBED_DEVICE)
-            return model.encode(texts, normalize_embeddings=True, convert_to_numpy=True)
-
-        if hasattr(self.embedder, 'encode_async'):
-            embeddings = await self.embedder.encode_async(texts)
-            return np.array(embeddings)
-        else:
-            return self.embedder.encode_safe(texts)
+        embs = await self.embedder.encode_async(texts)
+        return np.array(embs)
 
     def get_embedding_func(self):
         if not HAS_LIGHTRAG:
-            raise ImportError("LightRAG non disponible")
+            raise ImportError("LightRAG not available")
 
         async def _embed(texts: List[str]) -> np.ndarray:
             return await self.encode(texts)
 
-        from lightrag.utils import EmbeddingFunc
         return EmbeddingFunc(
             embedding_dim=self.dimension,
             max_token_size=8192,
-            func=_embed
+            func=_embed,
         )
 
 
 # ============================================================================
-# LLM BRIDGE (Reuse GroqLLMWrapper)
-# ============================================================================
-
-class LexiosLLMBridge:
-    """Réutilise votre GroqLLMWrapper pour LightRAG."""
-
-    def __init__(self, llm_wrapper: Any = None):
-        self.llm = llm_wrapper
-
-    async def complete(self, prompt: str, system_prompt: Optional[str] = None,
-                       history_messages: List[Dict] = None, **kwargs) -> str:
-        if self.llm is None:
-            from rag_service import GroqLLMWrapper
-            self.llm = GroqLLMWrapper()
-
-        full_prompt = ""
-        if system_prompt:
-            full_prompt += f"{system_prompt}\n\n"
-        if history_messages:
-            for msg in history_messages:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                full_prompt += f"{role}: {content}\n"
-        full_prompt += f"user: {prompt}"
-
-        return await self.llm(full_prompt, temperature=0.1, max_tokens=2048)
-
-    def get_llm_func(self) -> Callable:
-        async def _llm_func(prompt, system_prompt=None, history_messages=None, **kwargs):
-            return await self.complete(prompt, system_prompt, history_messages, **kwargs)
-        return _llm_func
-
-
-# ============================================================================
-# LIGHTRAG BRIDGE (CORRIGÉ — Context-only, pas réponse)
+# LIGHTRAG BRIDGE (Context Layer Only)
 # ============================================================================
 
 class LightRAGBridge:
     """
-    Bridge LightRAG ↔ Lexios — VERSION CORRIGÉE.
+    LightRAG Bridge — GRAPH CONTEXT LAYER ONLY.
 
-    Cette classe NE GÉNÈRE PAS de réponse LLM.
-    Elle extrait uniquement du CONTEXTE du graphe (facts, entités, relations)
-    qui sera injecté dans le prompt unique de Groq.
+    Responsibilities:
+    - index_document(): add docs to graph
+    - analyze_trigger(): decide if graph is relevant
+    - get_graph_context(): extract structured facts/entities/relations
+
+    Forbidden:
+    - NO scoring influence
+    - NO retrieval ranking
+    - NO LLM generation for answers
     """
 
-    def __init__(self, lexios_rag: Any = None, working_dir: Optional[str] = None):
-        self.lexios_rag = lexios_rag
+    def __init__(
+        self,
+        embedder: RTX2050SafeEmbedder,
+        llm: GroqLLMWrapper,
+        working_dir: Optional[str] = None,
+    ):
+        self.embedder = embedder
+        self.llm = llm
         self.working_dir = working_dir or settings.LIGHTRAG_WORKING_DIR
         self._rag_instance: Optional[LightRAG] = None
         self._initialized = False
-        self._embed_bridge: Optional[LexiosEmbeddingBridge] = None
-        self._llm_bridge: Optional[LexiosLLMBridge] = None
+        self._cache: Dict[str, GraphContext] = {}
         self.trigger = LightRAGTrigger()
 
         Path(self.working_dir).mkdir(parents=True, exist_ok=True)
 
         if not HAS_LIGHTRAG:
-            log.warning("LightRAG non disponible - bridge en mode pass-through")
+            log.warning("LightRAG unavailable — bridge in pass-through mode")
             return
 
-        self._init_bridges()
+        self._embed_adapter = LightRAGEmbedAdapter(embedder)
+        self._init_llm_bridge()
 
-    def _init_bridges(self):
-        embedder = None
-        if self.lexios_rag and hasattr(self.lexios_rag, 'retriever'):
-            retriever = self.lexios_rag.retriever
-            if hasattr(retriever, 'embedder'):
-                embedder = retriever.embedder
-        self._embed_bridge = LexiosEmbeddingBridge(embedder)
+    def _init_llm_bridge(self):
+        """Wrap GroqLLMWrapper for LightRAG internal use."""
+        self._llm_func = self._make_llm_func()
 
-        llm = None
-        if self.lexios_rag and hasattr(self.lexios_rag, 'retriever'):
-            retriever = self.lexios_rag.retriever
-            if hasattr(retriever, 'llm'):
-                llm = retriever.llm
-        self._llm_bridge = LexiosLLMBridge(llm)
-        log.info("🌉 Bridges LightRAG initialisés")
+    def _make_llm_func(self) -> Callable:
+        async def _llm_func(prompt, system_prompt=None, history_messages=None, **kwargs):
+            # Build proper message list for Groq API (not raw text concatenation)
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            if history_messages:
+                for msg in history_messages:
+                    messages.append({
+                        "role": msg.get("role", "user"),
+                        "content": msg.get("content", "")
+                    })
+            messages.append({"role": "user", "content": prompt})
+
+            # Call LLM with structured messages
+            return await self.llm(
+                messages=messages,
+                temperature=kwargs.get("temperature", 0.1),
+                max_tokens=kwargs.get("max_tokens", 2048),
+            )
+        return _llm_func
+
 
     async def initialize(self):
         if not HAS_LIGHTRAG or self._initialized:
@@ -312,18 +430,18 @@ class LightRAGBridge:
         try:
             self._rag_instance = LightRAG(
                 working_dir=self.working_dir,
-                llm_model_func=self._llm_bridge.get_llm_func(),
-                embedding_func=self._embed_bridge.get_embedding_func(),
+                llm_model_func=self._llm_func,
+                embedding_func=self._embed_adapter.get_embedding_func(),
             )
             await self._rag_instance.initialize_storages()
             self._initialized = True
-            log.info(f"✅ LightRAG initialisé: {self.working_dir}")
+            log.info(f"✅ LightRAG initialized: {self.working_dir}")
         except Exception as e:
             log.error(f"❌ LightRAG init failed: {e}")
             self._rag_instance = None
 
     async def index_document(self, doc: Dict[str, Any]) -> bool:
-        """Indexe un document dans LightRAG (graphe)."""
+        """Index raw text into LightRAG graph."""
         if not self._initialized or not self._rag_instance:
             return False
         try:
@@ -331,25 +449,30 @@ class LightRAGBridge:
             if not raw_text or len(raw_text) < 50:
                 return False
             await self._rag_instance.ainsert(raw_text)
-            log.info(f"📊 LightRAG: document indexé ({len(raw_text)} chars)")
+            log.info(f"📊 LightRAG indexed: {len(raw_text)} chars")
             return True
         except Exception as e:
-            log.error(f"LightRAG indexation failed: {e}")
+            log.error(f"LightRAG index failed: {e}")
             return False
 
-    async def get_graph_context(self, question: str, 
-                                mode: str = "hybrid",
-                                top_k: int = 8) -> GraphContext:
+    async def get_graph_context(
+        self,
+        question: str,
+        mode: str = "hybrid",
+        top_k: int = 8,
+    ) -> GraphContext:
         """
-        Extrait du CONTEXTE du graphe (PAS de réponse LLM).
-
-        Retourne: facts, entités, relations, chunks pertinents
-        qui seront injectés dans le prompt unique.
+        Extract structured graph context.
+        NO LLM answer generation — context only.
+        Returns structured GraphContext with facts/entities/relations.
         """
         if not self._initialized or not self._rag_instance:
             return GraphContext(mode="disabled")
 
-        import time
+        key = hashlib.md5(question.encode()).hexdigest()
+        if key in self._cache:
+            return self._cache[key]
+
         t0 = time.perf_counter()
 
         try:
@@ -357,70 +480,68 @@ class LightRAGBridge:
                 mode=mode,
                 top_k=top_k,
                 response_type="multiple paragraphs",
-                only_need_context=True  # ← IMPORTANT: on veut le contexte, pas la réponse
+                only_need_context=True,
             )
 
-            # LightRAG retourne le contexte brut (pas de génération LLM)
-            result = await self._rag_instance.aquery(question, param=param)
+            result = None
+            for _ in range(2):
+                try:
+                    result = await self._rag_instance.aquery(question, param=param)
+                    break
+                except Exception as e:
+                    log.warning(f"LightRAG aquery failed, retrying: {e}")
+                    await asyncio.sleep(1)
+                    
+            if result is None:
+                raise Exception("LightRAG aquery failed after 2 attempts")
+                
+            raw = result if isinstance(result, str) else str(result)
 
-            # Parser le résultat pour extraire facts/entités/relations
-            facts = []
-            entities = []
-            relations = []
-            chunks = []
-
-            if isinstance(result, str):
-                # Parser le texte pour extraire les faits structurés
-                lines = [l.strip() for l in result.split("\n") if l.strip()]
-                for line in lines:
-                    if line.startswith("-") or line.startswith("•"):
-                        facts.append(line[1:].strip())
-                    elif ":" in line and len(line) < 200:
-                        entities.append(line.split(":")[0].strip())
-                chunks = [result]  # Le contexte brut comme chunk
+            # FIXED: structured parsing via GraphContextParser with JSON + fallback
+            parsed = GraphContextParser.parse(raw)
 
             timing = (time.perf_counter() - t0) * 1000
 
-            return GraphContext(
-                facts=facts,
-                entities=entities,
-                relations=relations,
-                relevant_chunks=chunks,
-                raw_context=result if isinstance(result, str) else str(result),
+            graph_ctx = GraphContext(
+                facts=parsed["facts"],
+                entities=parsed["entities"],
+                relations=parsed["relations"],
+                relevant_chunks=parsed["chunks"],
+                raw_context=raw,
                 mode=mode,
-                timing_ms=timing
+                timing_ms=timing,
             )
+            
+            self._cache[key] = graph_ctx
+            return graph_ctx
 
         except Exception as e:
             log.error(f"LightRAG context extraction failed: {e}")
             return GraphContext(mode=f"{mode}_error")
 
     async def analyze_trigger(self, question: str) -> TriggerAnalysis:
-        """Analyse si LightRAG est pertinent pour cette question."""
         return self.trigger.analyze(question)
 
     async def get_graph_stats(self) -> Dict[str, Any]:
-        """Statistiques du graphe."""
         if not self._initialized or not self._rag_instance:
             return {"status": "not_initialized"}
         try:
-            import json
             graph_path = Path(self.working_dir) / "graph_data.json"
             if graph_path.exists():
-                with open(graph_path, 'r', encoding='utf-8') as f:
-                    graph_data = json.load(f)
+                with open(graph_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
                 return {
                     "status": "active",
-                    "nodes": len(graph_data.get("nodes", [])),
-                    "edges": len(graph_data.get("edges", [])),
-                    "working_dir": self.working_dir
+                    "nodes": len(data.get("nodes", [])),
+                    "edges": len(data.get("edges", [])),
+                    "working_dir": str(self.working_dir),
                 }
             return {"status": "active", "nodes": 0, "edges": 0}
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
     async def close(self):
-        if self._rag_instance and hasattr(self._rag_instance, 'finalize_storages'):
+        if self._rag_instance and hasattr(self._rag_instance, "finalize_storages"):
             await self._rag_instance.finalize_storages()
 
 
@@ -429,10 +550,17 @@ class LightRAGBridge:
 # ============================================================================
 
 _lightrag_bridge_instance: Optional[LightRAGBridge] = None
+_lightrag_lock = asyncio.Lock()
 
-async def get_lightrag_bridge(lexios_rag: Any = None) -> LightRAGBridge:
+async def get_lightrag_bridge(
+    embedder: RTX2050SafeEmbedder,
+    llm: GroqLLMWrapper,
+) -> LightRAGBridge:
+    """Thread-safe singleton getter for LightRAG bridge."""
     global _lightrag_bridge_instance
     if _lightrag_bridge_instance is None:
-        _lightrag_bridge_instance = LightRAGBridge(lexios_rag)
-        await _lightrag_bridge_instance.initialize()
+        async with _lightrag_lock:
+            if _lightrag_bridge_instance is None:
+                _lightrag_bridge_instance = LightRAGBridge(embedder, llm)
+                await _lightrag_bridge_instance.initialize()
     return _lightrag_bridge_instance

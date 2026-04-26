@@ -43,9 +43,10 @@ class IngestionPipeline:
         self.ocr = LegalOCR()
         
         # Chemins de persistance BM25 (ChromaDB est déjà persistant par défaut)
-        self.bm25_path = Path(settings.CACHE_DIR) / "bm25_index.pkl"
-        self.meta_path = Path(settings.CACHE_DIR) / "ingestion_meta.json"
-        Path(settings.CACHE_DIR).mkdir(parents=True, exist_ok=True)
+        self.cache_dir = Path(settings.CACHE_DIR)
+        self.bm25_path = self.cache_dir / "bm25_index.pkl"
+        self.meta_path = self.cache_dir / "ingestion_meta.json"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
         
         log.info("IngestionPipeline v6 initialisé (Article-Aware, no FAISS)")
 
@@ -76,7 +77,7 @@ class IngestionPipeline:
             log.info("PHASE 2b: Indexation LightRAG (Knowledge Graph)")
             log.info("=" * 60)
             try:
-                bridge = await get_lightrag_bridge(self.rag)
+                bridge = await get_lightrag_bridge(self.rag.retriever.embedder, self.rag.retriever.llm)
                 for doc in docs:
                     success = await bridge.index_document(doc.to_dict())
                     if success:
@@ -133,6 +134,9 @@ class IngestionPipeline:
             bm25_svc.chunk_map = data["chunk_map"]
             bm25_svc.chunk_texts = data["chunk_texts"]
             bm25_svc.index = BM25Okapi(bm25_svc.tokenized_corpus)
+            
+            # Sync chunk_texts to HybridRetriever's own store
+            self.rag.retriever.chunk_texts.update(bm25_svc.chunk_texts)
             
             log.info(f"BM25 chargé depuis disque: {len(bm25_svc.tokenized_corpus)} chunks")
             return True

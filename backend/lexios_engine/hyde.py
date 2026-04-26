@@ -1,18 +1,19 @@
 """
-hyde.py — Hypothetical Document Embeddings v5
+hyde.py — Hypothetical Document Embeddings v6
 ==============================================
-Query expansion avec respect strict de settings.HYDE_MODE
+Query expansion avec respect strict de settings.HYDE_MODE.
+DRY: Réutilise GroqLLMWrapper (rate limiting, circuit breaker, client reuse)
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Optional, Literal
 
-import httpx
-
 from config import settings
+from core_llm import GroqLLMWrapper
 
 log = logging.getLogger("lexios.hyde")
 
@@ -35,23 +36,9 @@ Format : Paragraphe unique sans introduction ni conclusion métalinguistique."""
 اكتب مقطعاً من 100-150 كلمة يجيب على السؤال المطروح.
 الأسلوب: دقيق، تقني، يستشهد بنصوص قانونية تونسية حقيقية."""
 
-    def __init__(self, timeout: int = 30):
-        self.timeout = timeout
-        self._session: Optional[httpx.AsyncClient] = None
-        # Utilise le mode de config
-        self.mode = settings.HYDE_MODE
-        
-        if self.mode == "query_only":
-            log.info("HyDE disabled (query_only mode)")
-
-    async def _get_session(self) -> httpx.AsyncClient:
-        if self._session is None or self._session.is_closed:
-            self._session = httpx.AsyncClient(timeout=self.timeout)
-        return self._session
-
-    async def close(self):
-        if self._session and not self._session.is_closed:
-            await self._session.aclose()
+    def __init__(self, llm_wrapper: Optional[GroqLLMWrapper] = None):
+        # Réutilise le LLM wrapper partagé (circuit breaker, rate limiting, client pooling)
+        self.llm = llm_wrapper or GroqLLMWrapper()
 
     def _detect_language(self, text: str) -> Literal["fr", "ar"]:
         if not text:
@@ -59,65 +46,55 @@ Format : Paragraphe unique sans introduction ni conclusion métalinguistique."""
         ar_count = sum(1 for c in text if '\u0600' <= c <= '\u06FF')
         return "ar" if ar_count / max(len(text), 1) > 0.3 else "fr"
 
+    def _is_factual_pattern(self, query: str) -> bool:
+        """
+        Rule #8: HyDE must only be disabled when a query is both short AND matches a factual pattern.
+        """
+        # Rule #6: Normalize (lowercase + strip punctuation)
+        clean = re.sub(r'[^\w\s]', '', query.lower()).strip()
+        
+        patterns = [
+            r"^quel(le)?s?\s+est\s+(l[' ])?article",
+            r"^article\s+\d+",
+            r"^définition\s+de",
+            r"^qu[' ]est[- ]ce\s+que",
+            r"^المادة\s+\d+",
+            r"^ما\s+هو\s+تعريف",
+            r"^من\s+هو",
+            r"^cite(z)?\s+",
+            r"^donne(z)?\s+moi"
+        ]
+        return any(re.search(p, clean) for p in patterns)
+
     async def _generate(self, question: str, language: Literal["fr", "ar"]) -> str:
-        """Génère le document hypothétique."""
+        """Génère le document hypothétique via le LLM wrapper partagé."""
         system = self.SYSTEM_PROMPT_AR if language == "ar" else self.SYSTEM_PROMPT_FR
         
         try:
-            if settings.LLM_PROVIDER == "groq" and settings.GROQ_API_KEY:
-                return await self._call_groq(question, system)
-            else:
-                return await self._call_ollama(question, system)
+            return await self.llm(
+                f"Question : {question}",
+                system_prompt=system,
+                temperature=0.3,
+                max_tokens=300
+            )
         except Exception as e:
             log.warning(f"HyDE generation failed: {e}")
             return ""
 
-    async def _call_ollama(self, prompt: str, system: str) -> str:
-        session = await self._get_session()
-        payload = {
-            "model": settings.OLLAMA_MODEL,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": f"Question : {prompt}\n\nRédige l'extrait juridique répondant à cette question :"}
-            ],
-            "stream": False,
-            "options": {
-                "temperature": 0.3,
-                "num_ctx": 2048,
-                "num_predict": 300
-            }
-        }
-        
-        response = await session.post(f"{settings.OLLAMA_HOST}/api/chat", json=payload)
-        response.raise_for_status()
-        return response.json()["message"]["content"].strip()
-
-    async def _call_groq(self, prompt: str, system: str) -> str:
-        session = await self._get_session()
-        payload = {
-            "model": settings.GROQ_MODEL,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": f"Question : {prompt}"}
-            ],
-            "max_tokens": 300,
-            "temperature": 0.3
-        }
-        
-        response = await session.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {settings.GROQ_API_KEY}"},
-            json=payload
-        )
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"].strip()
-
     async def enhance(self, question: str) -> str:
         """
         Améliore la requête selon settings.HYDE_MODE.
+        Mode lu dynamiquement (si changé à runtime, l'instance s'en aperçoit).
         """
+        mode = getattr(settings, "HYDE_MODE", "combined")
+        
         # Mode pass-through
-        if self.mode == "query_only" or not settings.USE_HYDE:
+        if mode == "query_only" or not settings.USE_HYDE:
+            return question
+            
+        # Rule #8: Short AND Factual -> Disable HyDE
+        if len(question.split()) < 6 and self._is_factual_pattern(question):
+            log.debug(f"HyDE bypassed (short factual query): {question}")
             return question
             
         if not question or len(question.strip()) < 5:
@@ -131,7 +108,7 @@ Format : Paragraphe unique sans introduction ni conclusion métalinguistique."""
             return question
             
         # Mode hypo_only: retourne uniquement le document hypothétique
-        if self.mode == "hypo_only":
+        if mode == "hypo_only":
             return hypo
             
         # Mode combined (par défaut): question + contexte hypothétique
@@ -145,8 +122,8 @@ Format : Paragraphe unique sans introduction ni conclusion métalinguistique."""
 # Singleton
 _hyde_instance: Optional[HyDE] = None
 
-def get_hyde() -> HyDE:
+def get_hyde(llm_wrapper: Optional[GroqLLMWrapper] = None) -> HyDE:
     global _hyde_instance
     if _hyde_instance is None:
-        _hyde_instance = HyDE()
+        _hyde_instance = HyDE(llm_wrapper=llm_wrapper)
     return _hyde_instance

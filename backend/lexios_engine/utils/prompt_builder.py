@@ -486,21 +486,24 @@ class PromptBuilder(LegalPromptBuilder):
         context: str,
         legal_mode: str = "general",
         entities: Dict[str, Any] = None,
+        config: Optional[PromptConfig] = None,
+        sources_count: int = 3,
     ) -> str:
         """API legacy - appelle la nouvelle version avec defaults."""
         # Mapping ancien vers nouveau
-        mode_map = {
-            "penal": LegalMode.PENAL,
-            "civil": LegalMode.CIVIL,
-            "general": LegalMode.GENERAL
-        }
-        
-        config = PromptConfig(
-            language="ar" if "ar" in language.lower() else "fr",
-            legal_mode=mode_map.get(legal_mode, LegalMode.GENERAL),
-            response_format=ResponseFormat.DETAILED,
-            include_entities=bool(entities)
-        )
+        if config is None:
+            mode_map = {
+                "penal": LegalMode.PENAL,
+                "civil": LegalMode.CIVIL,
+                "general": LegalMode.GENERAL
+            }
+            
+            config = PromptConfig(
+                language="ar" if "ar" in language.lower() else "fr",
+                legal_mode=mode_map.get(legal_mode, LegalMode.GENERAL),
+                response_format=ResponseFormat.DETAILED,
+                include_entities=bool(entities)
+            )
         
         return LegalPromptBuilder.build_synthesis_prompt(
             language=language,
@@ -508,7 +511,7 @@ class PromptBuilder(LegalPromptBuilder):
             legal_mode=legal_mode,
             entities=entities or {},
             config=config,
-            sources_count=3  # Default legacy
+            sources_count=sources_count
         )
     
     @staticmethod

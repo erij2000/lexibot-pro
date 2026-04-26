@@ -205,7 +205,7 @@ class QueryRouter:
             use_reranker=True,
             top_k_retrieval=top_k,
             top_k_final=settings.RETRIEVAL_FINAL_K,
-            confidence=min(score / 2.5, 1.0),
+            confidence=score / (score + 1.0),
             reason="; ".join(reasons) if reasons else "default"
         )
 
@@ -264,8 +264,8 @@ class ContextBuilder:
     - Tagging explicite [BASE] vs [USER_DOC] vs [GRAPH]
     """
 
-    def __init__(self, max_chars: int = 12000):
-        self.max_chars = max_chars
+    def __init__(self, max_chars: Optional[int] = None):
+        self.max_chars = max_chars or getattr(settings, "PIPELINE_MAX_CONTEXT_CHARS", 12000)
         self._stats = {"builds": 0, "total_chars_avg": 0}
 
     def build(self, 
@@ -281,23 +281,36 @@ class ContextBuilder:
         3. Graph facts (si mode complex)
         """
         parts = []
-        seen_articles = set()
+        seen_articles = {}
         articles_used = []
 
         # 1. Chunks base (diversifiés par article)
         base_parts = []
         for c in chunks:
-            aid = c.get("article_id", "unknown")
-            if aid in seen_articles:
-                continue  # Skip doublons d'article
+            # Extract article_id from chunk dict or nested metadata
+            aid = c.get("article_id") if isinstance(c, dict) else None
+            if not aid and isinstance(c, dict):
+                aid = c.get("metadata", {}).get("article_id") or c.get("metadata", {}).get("source_file", "unknown")
+            if not aid:
+                aid = getattr(c, "article_id", None) or getattr(getattr(c, "metadata", None), "source_file", "unknown")
+            if not aid or aid == "unknown":
+                aid = f"chunk_{len(seen_articles)}"
+            
+            # Relaxed deduplication: allow up to 3 chunks per article
+            count = seen_articles.get(aid, 0)
+            if count >= 3:
+                continue
 
-            seen_articles.add(aid)
-            articles_used.append(aid)
+            seen_articles[aid] = count + 1
+            if aid not in articles_used:
+                articles_used.append(aid)
 
             text = c.get("text", "") if isinstance(c, dict) else getattr(c, "text", "")
             source = c.get("metadata", {}).get("source_file", "base") if isinstance(c, dict) else "base"
 
-            base_parts.append(f"[BASE|{aid}] {text[:600]}")
+            # Standard markdown format (parseable by Angular front)
+            base_parts.append(f"**Source:** {aid}\n\n{text[:600]}")
+
 
             if len("\n\n".join(base_parts)) > self.max_chars * 0.7:
                 break
@@ -369,8 +382,9 @@ class PostProcessor:
     FORBIDDEN_PATTERNS = [
         "je ne suis pas sûr", "peut-être", "il se peut que",
         "selon certaines sources", "d'après ce que je sais",
-        "je pense que", "à mon avis",
+        "à mon avis",
     ]
+
 
     def __init__(self):
         self._stats = {"processed": 0, "fallbacks": 0, "cleaned": 0}
@@ -397,11 +411,12 @@ class PostProcessor:
             self._stats["fallbacks"] += 1
             return answer, metadata
 
-        # 3. Vérification citations
-        has_citations = "[" in answer and "|" in answer
+        # 3. Vérification citations (adapté au nouveau format markdown)
+        has_citations = "**Source:**" in answer or "[" in answer
         if not has_citations and context.articles_used:
             # Ajouter un avertissement discret si pas de citations
             metadata["warning"] = "pas_de_citations_explicites"
+
 
         # 4. Détection patterns interdits (hallucination)
         q_lower = answer.lower()
@@ -466,28 +481,37 @@ class LexiosPipeline:
     def __init__(self, lexios_rag: Any):
         self.rag = lexios_rag
         self.router = QueryRouter()
-        self.context_builder = ContextBuilder(max_chars=12000)
+        self.context_builder = ContextBuilder(max_chars=getattr(settings, "PIPELINE_MAX_CONTEXT_CHARS", 12000))
         self.post_processor = PostProcessor()
         self._lightrag: Optional[Any] = None
         self._hyde: Optional[Any] = None
         self._total_queries = 0
         self._total_time_ms = 0
+ 
+    async def close(self):
+        """Libère les ressources du RAG."""
+        if hasattr(self.rag, "close"):
+            await self.rag.close()
 
     async def initialize(self):
         """Initialise les composants optionnels."""
         if settings.LIGHTRAG_ENABLED:
             try:
                 from lightrag_bridge import get_lightrag_bridge
-                self._lightrag = await get_lightrag_bridge(self.rag)
+                self._lightrag = await get_lightrag_bridge(
+                    self.rag.retriever.embedder,
+                    self.rag.retriever.llm
+                )
             except Exception as e:
                 log.warning(f"LightRAG init skipped: {e}")
 
         if settings.USE_HYDE:
             try:
                 from hyde import get_hyde
-                self._hyde = get_hyde()
+                self._hyde = get_hyde(llm_wrapper=self.rag.retriever.llm)
             except Exception as e:
                 log.warning(f"HyDE init skipped: {e}")
+
 
     async def process(self, query: str, 
                       user_file_chunks: Optional[List[Dict]] = None,
@@ -598,6 +622,7 @@ class LexiosPipeline:
             timings=timings,
             metadata={
                 "query": query,
+                "hyde_applied": query_for_retrieval != query,
                 "query_for_retrieval": query_for_retrieval if query_for_retrieval != query else None,
                 "post_processing": post_meta,
                 "avg_latency_ms": round(self._total_time_ms / self._total_queries, 2) if self._total_queries > 0 else 0

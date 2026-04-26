@@ -24,7 +24,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Callable
 from dataclasses import dataclass, field, asdict
 
 import numpy as np
@@ -68,6 +68,7 @@ class RagasMetrics:
     context_entity_recall: float = 0.0
     answer_similarity: float = 0.0
     answer_correctness: float = 0.0
+    context_article_coverage: float = 0.0
 
     # Score composite pondéré
     composite_score: float = 0.0
@@ -81,10 +82,10 @@ class RagasMetrics:
             "context_entity_recall": round(self.context_entity_recall, 3),
             "answer_similarity": round(self.answer_similarity, 3),
             "answer_correctness": round(self.answer_correctness, 3),
+            "context_article_coverage": round(self.context_article_coverage, 3),
             "composite_score": round(self.composite_score, 3),
         }
 
-    @property
     def is_acceptable(self, threshold: float = 0.7) -> bool:
         """Vérifie si le score composite dépasse le seuil."""
         return self.composite_score >= threshold
@@ -95,9 +96,11 @@ class EvaluationCase:
     """Cas de test pour l'évaluation RAGAS."""
     question: str
     answer: str
-    contexts: List[str]
+    contexts: List[Dict[str, Any]]
     ground_truth: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    chunk_ids: List[str] = field(default_factory=list)
+    article_ids: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -105,7 +108,9 @@ class EvaluationCase:
             "answer": self.answer,
             "contexts": self.contexts,
             "ground_truth": self.ground_truth,
-            "metadata": self.metadata
+            "metadata": self.metadata,
+            "chunk_ids": self.chunk_ids,
+            "article_ids": self.article_ids
         }
 
 
@@ -151,12 +156,16 @@ class BatchEvaluationReport:
         metrics_names = [
             "faithfulness", "answer_relevancy", "context_precision",
             "context_recall", "context_entity_recall", "answer_similarity",
-            "answer_correctness", "composite_score"
+            "answer_correctness", "context_article_coverage", "composite_score"
         ]
 
         for name in metrics_names:
             values = [getattr(r.metrics, name) for r in self.reports]
             self.aggregate_metrics[name] = round(sum(values) / len(values), 3)
+
+    @property
+    def pass_rate(self) -> float:
+        return self.passed_cases / self.total_cases if self.total_cases > 0 else 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         self.compute_aggregate()
@@ -165,7 +174,7 @@ class BatchEvaluationReport:
             "total_cases": self.total_cases,
             "passed_cases": self.passed_cases,
             "failed_cases": self.failed_cases,
-            "pass_rate": round(self.passed_cases / self.total_cases, 3) if self.total_cases > 0 else 0,
+            "pass_rate": round(self.pass_rate, 3),
             "reports": [r.to_dict() for r in self.reports]
         }
 
@@ -203,8 +212,9 @@ class RagasEvaluator:
     4. Permet l'évaluation batch sur un jeu de test
     """
 
-    def __init__(self, llm_wrapper: Any = None):
+    def __init__(self, llm_wrapper: "Any" = None, embedder: "Any" = None):
         self.llm = llm_wrapper
+        self.embedder = embedder
         self.enabled = HAS_RAGAS and settings.RAGAS_ENABLED
 
         if not self.enabled:
@@ -213,6 +223,10 @@ class RagasEvaluator:
 
         # Initialiser le LLM pour RAGAS
         self._init_ragas_llm()
+        if not self.ragas_llm:
+            self.enabled = False
+            log.error("RAGAS DISABLED: LLM not compatible with current provider")
+            return
 
         # Sélectionner les métriques actives
         self.active_metrics = self._get_active_metrics()
@@ -231,7 +245,7 @@ class RagasEvaluator:
                     api_key=settings.GROQ_API_KEY,
                     base_url="https://api.groq.com/openai/v1"
                 )
-                self.ragas_llm = llm_factory("gpt-4o", client=client)
+                self.ragas_llm = llm_factory("qwen-2.5-32b", client=client)
             else:
                 log.warning("RAGAS LLM non configuré (besoin Groq/OpenAI)")
                 self.ragas_llm = None
@@ -264,8 +278,10 @@ class RagasEvaluator:
         return metrics
 
     async def evaluate_single(self, question: str, answer: str,
-                            contexts: List[str],
-                            ground_truth: Optional[str] = None) -> EvaluationReport:
+                            contexts: List[Dict[str, Any]],
+                            ground_truth: Optional[str] = None,
+                            chunk_ids: List[str] = None,
+                            article_ids: List[str] = None) -> EvaluationReport:
         """
         Évalue un cas unique avec RAGAS.
 
@@ -280,7 +296,7 @@ class RagasEvaluator:
         """
         if not self.enabled or not self.ragas_llm:
             log.warning("RAGAS non disponible, retour métriques par défaut")
-            return self._fallback_report(question, answer, contexts, ground_truth)
+            return self._fallback_report(question, answer, contexts, ground_truth, chunk_ids=chunk_ids, article_ids=article_ids)
 
         t0 = time.perf_counter()
 
@@ -288,10 +304,11 @@ class RagasEvaluator:
             # Préparer les données pour RAGAS
             from datasets import Dataset
 
+            context_texts = [c.get("text", "") if isinstance(c, dict) else str(c) for c in contexts]
             data = {
                 "question": [question],
                 "answer": [answer],
-                "contexts": [contexts],
+                "contexts": [context_texts],
             }
             if ground_truth:
                 data["ground_truth"] = [ground_truth]
@@ -324,13 +341,16 @@ class RagasEvaluator:
             if "answer_correctness" in scores:
                 metrics.answer_correctness = float(scores["answer_correctness"])
 
+            if contexts:
+                unique_articles = len(set(c.get("article_id") for c in contexts if isinstance(c, dict) and c.get("article_id")))
+                metrics.context_article_coverage = min(1.0, unique_articles / 3.0)
+
             # Score composite pondéré
             weights = {
-                "faithfulness": 0.25,
+                "faithfulness": 0.35,
+                "context_precision": 0.25,
                 "answer_relevancy": 0.20,
-                "context_precision": 0.20,
-                "context_recall": 0.15,
-                "context_entity_recall": 0.10,
+                "context_recall": 0.10,
                 "answer_correctness": 0.10,
             }
 
@@ -349,7 +369,9 @@ class RagasEvaluator:
                 question=question,
                 answer=answer,
                 contexts=contexts,
-                ground_truth=ground_truth
+                ground_truth=ground_truth,
+                chunk_ids=chunk_ids or [],
+                article_ids=article_ids or []
             )
 
             return EvaluationReport(
@@ -360,26 +382,43 @@ class RagasEvaluator:
 
         except Exception as e:
             log.error(f"RAGAS evaluation failed: {e}")
-            return self._fallback_report(question, answer, contexts, ground_truth, error=str(e))
+            return self._fallback_report(question, answer, contexts, ground_truth, error=str(e), chunk_ids=chunk_ids, article_ids=article_ids)
 
-    def _fallback_report(self, question: str, answer: str, contexts: List[str],
+    def _fallback_report(self, question: str, answer: str, contexts: List[Dict[str, Any]],
                         ground_truth: Optional[str] = None,
-                        error: Optional[str] = None) -> EvaluationReport:
+                        error: Optional[str] = None,
+                        chunk_ids: List[str] = None,
+                        article_ids: List[str] = None) -> EvaluationReport:
         """Rapport fallback quand RAGAS n'est pas disponible."""
         case = EvaluationCase(
-            question=question, answer=answer, contexts=contexts, ground_truth=ground_truth
+            question=question, answer=answer, contexts=contexts, ground_truth=ground_truth,
+            chunk_ids=chunk_ids or [], article_ids=article_ids or []
         )
         metrics = RagasMetrics()
 
         # Calculs heuristiques de fallback
         if contexts and answer:
-            # Faithfulness fallback: overlap lexical simple
-            context_text = " ".join(contexts).lower()
-            answer_words = set(answer.lower().split())
-            context_words = set(context_text.split())
-            if answer_words:
-                overlap = len(answer_words & context_words) / len(answer_words)
-                metrics.faithfulness = min(overlap * 1.5, 1.0)  # Boost approximatif
+            context_text = " ".join([c.get("text", "") if isinstance(c, dict) else str(c) for c in contexts]).lower()
+            try:
+                # Use shared embedder if available to save memory (Rule #3)
+                if self.embedder:
+                    import torch
+                    from sentence_transformers import util
+                    with torch.no_grad():
+                        ctx_emb = self.embedder.encode_query(context_text)
+                        ans_emb = self.embedder.encode_query(answer)
+                        sim = util.cos_sim(torch.tensor(ctx_emb), torch.tensor(ans_emb)).item()
+                        metrics.faithfulness = max(0.0, sim)
+                else:
+                    # Pure lexical fallback if no embedder
+                    answer_words = set(answer.lower().split())
+                    context_words = set(context_text.lower().split())
+                    if answer_words:
+                        overlap = len(answer_words & context_words) / len(answer_words)
+                        metrics.faithfulness = min(overlap * 1.5, 1.0)
+            except Exception as e:
+                log.warning(f"Faithfulness fallback calculation failed: {e}")
+                metrics.faithfulness = 0.5
 
             # Context precision fallback: longueur contexte
             metrics.context_precision = min(len(context_text) / 2000, 1.0)
@@ -392,9 +431,9 @@ class RagasEvaluator:
                 metrics.answer_correctness = len(gt_words & ans_words) / len(gt_words)
 
         metrics.composite_score = (
-            metrics.faithfulness * 0.3 +
-            metrics.context_precision * 0.3 +
-            metrics.answer_correctness * 0.4
+            metrics.faithfulness * 0.35 +
+            metrics.context_precision * 0.25 +
+            metrics.answer_correctness * 0.40
         )
 
         return EvaluationReport(
@@ -421,7 +460,8 @@ class RagasEvaluator:
             log.info(f"RAGAS eval {i+1}/{len(cases)}: {case.question[:50]}...")
 
             result = await self.evaluate_single(
-                case.question, case.answer, case.contexts, case.ground_truth
+                case.question, case.answer, case.contexts, case.ground_truth,
+                chunk_ids=case.chunk_ids, article_ids=case.article_ids
             )
             report.add(result)
 
@@ -445,24 +485,28 @@ class RagasEvaluator:
         """
         answer = lexios_response.get("answer", "")
         contexts = []
+        chunk_ids = []
+        article_ids = []
 
         # Extraire les textes des chunks
         chunks = lexios_response.get("chunks", [])
         for chunk in chunks:
             if isinstance(chunk, dict):
-                text = chunk.get("text", "")
+                contexts.append(chunk)
+                if chunk.get("chunk_id"):
+                    chunk_ids.append(chunk.get("chunk_id"))
+                if chunk.get("article_id"):
+                    article_ids.append(chunk.get("article_id"))
             else:
-                text = getattr(chunk, "text", "")
-            if text:
-                contexts.append(text)
+                contexts.append({"text": getattr(chunk, "text", "")})
 
         # Si pas de chunks, utiliser le context brut
         if not contexts:
             raw_context = lexios_response.get("context", "")
             if raw_context:
-                contexts = [raw_context]
+                contexts = [{"text": raw_context}]
 
-        return await self.evaluate_single(question, answer, contexts)
+        return await self.evaluate_single(question, answer, contexts, chunk_ids=chunk_ids, article_ids=list(set(article_ids)))
 
     def save_report(self, report: BatchEvaluationReport, path: Optional[str] = None):
         """Sauvegarde un rapport au format JSON."""

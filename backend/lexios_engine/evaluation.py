@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Any
 
-from config import settings
+from lexios_engine.config import settings
 
 from ragas_evaluator import (
     RagasEvaluator, TunisianLegalTestSuite, 

@@ -19,10 +19,21 @@ from lexios_engine.config import settings
 from lexios_engine.cache import get_cache
 from lexios_engine.hyde import HyDE
 from lexios_engine.rag_service import LexiosRAG
+from lexios_engine.pipeline_orchestrator import LexiosPipeline
 from lexios_engine.utils.prompt_builder import PromptBuilder
 
-from lightrag_bridge import LightRAGBridge, get_lightrag_bridge, GraphContext
-from ragas_evaluator import RagasEvaluator, get_ragas_evaluator
+
+try:
+    from lexios_engine.lightrag_bridge import LightRAGBridge, get_lightrag_bridge, GraphContext
+    HAS_LIGHTRAG_BRIDGE = True
+except ImportError:
+    HAS_LIGHTRAG_BRIDGE = False
+
+try:
+    from lexios_engine.ragas_evaluator import RagasEvaluator, get_ragas_evaluator
+    HAS_RAGAS = True
+except ImportError:
+    HAS_RAGAS = False
 
 log = logging.getLogger("lexios.router")
 
@@ -52,20 +63,39 @@ def get_hyde() -> Optional[HyDE]:
 _lightrag: Optional[LightRAGBridge] = None
 _ragas_eval: Optional[RagasEvaluator] = None
 
-async def get_lightrag() -> Optional[LightRAGBridge]:
+async def get_lightrag() -> Optional["LightRAGBridge"]:
+    """Initialize LightRAG bridge if enabled."""
     global _lightrag
-    if _lightrag is None and settings.LIGHTRAG_ENABLED:
+    if _lightrag is None and settings.LIGHTRAG_ENABLED and HAS_LIGHTRAG_BRIDGE:
         try:
-            _lightrag = await get_lightrag_bridge(get_rag())
+            rag = get_rag()
+            # Pass embedder + llm from retriever, not LexiosRAG itself
+            _lightrag = await get_lightrag_bridge(
+                rag.retriever.embedder,
+                rag.retriever.llm
+            )
         except Exception as e:
             log.warning(f"LightRAG init failed: {e}")
     return _lightrag
 
-def get_ragas() -> RagasEvaluator:
+def get_ragas() -> "RagasEvaluator":
     global _ragas_eval
-    if _ragas_eval is None:
+    if _ragas_eval is None and HAS_RAGAS:
         _ragas_eval = get_ragas_evaluator()
     return _ragas_eval
+
+# ── SINGLETON PIPELINE ──────────────────────────────────────────────────────
+
+_pipeline: Optional[LexiosPipeline] = None
+
+async def get_pipeline() -> LexiosPipeline:
+    """Get or initialize the LexiosPipeline singleton."""
+    global _pipeline
+    if _pipeline is None:
+        _pipeline = LexiosPipeline(get_rag())
+        await _pipeline.initialize()
+    return _pipeline
+
 
 # ── PYDANTIC SCHEMAS ────────────────────────────────────────────────────────
 
@@ -156,7 +186,33 @@ NER_SYSTEM_AR = """أنت LexiBot، خبير قانوني تونسي كبير.
 # ── APPEL LLM UNIFIÉ ────────────────────────────────────────────────────────
 
 async def _call_llm(prompt: str, system_prompt: str, use_json: bool = False,
-                    temperature: float = 0.1, max_tokens: int = 2048) -> str:
+                    temperature: float = 0.1, max_tokens: int = 2048,
+                    rag: Optional[LexiosRAG] = None) -> str:
+    """
+    Appel LLM unifié via GroqLLMWrapper (circuit breaker, rate limiting, client reuse).
+    Fallback Ollama si Groq non configuré.
+    """
+    # Try GroqLLMWrapper first (reuses client, respects rate limits, circuit breaker)
+    if settings.LLM_PROVIDER == "groq" and settings.GROQ_API_KEY:
+        llm = None
+        if rag and hasattr(rag, 'retriever') and hasattr(rag.retriever, 'llm'):
+            llm = rag.retriever.llm
+        if not llm:
+            from lexios_engine.core_llm import GroqLLMWrapper
+            llm = GroqLLMWrapper()
+        
+        try:
+            return await llm(
+                prompt,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                use_json=use_json,
+            )
+        except Exception as e:
+            log.warning(f"GroqLLMWrapper failed, falling back to direct HTTP: {e}")
+    
+    # Fallback: Direct HTTP (Ollama or Groq via raw HTTP)
     timeout = settings.LLM_TIMEOUT
     try:
         if settings.LLM_PROVIDER == "groq" and settings.GROQ_API_KEY:
@@ -197,6 +253,7 @@ async def _call_llm(prompt: str, system_prompt: str, use_json: bool = False,
         raise HTTPException(status_code=503, detail="LLM inaccessible")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur LLM: {e}")
+
 
 
 # ── NER PIPELINE ────────────────────────────────────────────────────────────
@@ -282,6 +339,7 @@ NO_CONTEXT = {
 
 # ── ROUTEUR FASTAPI ─────────────────────────────────────────────────────────
 
+from lexios_engine.utils.prompt_builder import PromptBuilder
 router = APIRouter(tags=["Legal Query v5"])
 
 
@@ -367,8 +425,10 @@ async def ask_legal(request: LegalRequest) -> LegalResponse:
             fallback = await _call_llm(
                 request.message,
                 f"Tu es Lexibot, expert en droit tunisien. Réponds en {intent.language}.",
-                temperature=0.3
+                temperature=0.3,
+                rag=rag
             )
+
             return LegalResponse(
                 answer=f"[Mode fallback - base documentaire indisponible]\n\n{fallback}",
                 intent=intent.intent, language=intent.language, is_legal=True,
@@ -411,8 +471,10 @@ async def ask_legal(request: LegalRequest) -> LegalResponse:
             request.message,
             system_prompt,
             temperature=0.1,
-            max_tokens=2048
+            max_tokens=2048,
+            rag=rag
         )
+
     except Exception as e:
         log.error(f"[{session_id}] Synthèse failed: {e}")
         final_answer = f"[Synthèse indisponible]\n\nContextes trouvés:\n{context[:2000]}..."
@@ -491,7 +553,7 @@ async def health_check() -> Dict[str, Any]:
 
 @router.post("/ask-legal/ingest")
 async def ingest_documents(markdown_dir: str = "./data/markdown") -> Dict[str, Any]:
-    from ingestion import IngestionPipeline
+    from lexios_engine.ingestion import IngestionPipeline
     pipeline = IngestionPipeline()
     try:
         stats = await pipeline.run(markdown_dir)
@@ -562,8 +624,49 @@ async def get_graph_context_endpoint(request: LegalRequest) -> Dict[str, Any]:
         return {"status": "error", "message": str(e)}
 
 
+@router.post("/ask-legal/pipeline", response_model=LegalResponse)
+async def ask_legal_pipeline(request: LegalRequest) -> LegalResponse:
+    """
+    Endpoint PIPELINE: Uses LexiosPipeline orchestrator.
+    Production-grade routing with QueryRouter, HyDE, LightRAG trigger,
+    ContextBuilder, and PostProcessor.
+    """
+    start_time = time.perf_counter()
+    session_id = request.session_id or f"pipeline_{int(start_time * 1000)}"
+    
+    try:
+        pipeline = await get_pipeline()
+        result = await pipeline.process(
+            query=request.message,
+            metadata_filter=request.metadata_filter
+        )
+        
+        processing_time = int((time.perf_counter() - start_time) * 1000)
+        
+        return LegalResponse(
+            answer=result.answer,
+            intent="legal_question",
+            language="fr",
+            is_legal=True,
+            entities=[],
+            confidence=result.route.confidence,
+            rag_used=True,
+            hyde_used=result.metadata.get("hyde_applied", False),
+            articles_found=len(result.context.articles_used),
+            sources_count=result.context.chunks_used,
+            processing_time_ms=processing_time,
+            session_id=session_id,
+            debug_info=result.to_dict() if request.debug_mode else None
+        )
+    except Exception as e:
+        log.error(f"[{session_id}] Pipeline error: {e}")
+        # Fallback to standard endpoint
+        return await ask_legal(request)
+
+
 @router.post("/ask-legal/mix", response_model=LegalResponse)
 async def ask_legal_mix(request: LegalRequest) -> LegalResponse:
+
     """
     Endpoint MIX: Combine Lexios + LightRAG via CONTEXT FUSION.
     Architecture corrigée (v2):
@@ -715,7 +818,7 @@ async def evaluate_batch(file_path: Optional[str] = None) -> Dict[str, Any]:
     if not settings.RAGAS_ENABLED:
         return {"status": "disabled"}
     try:
-        from evaluation import RagasEvaluationSuite
+        from lexios_engine.evaluation import RagasEvaluationSuite
         suite = RagasEvaluationSuite(get_rag())
         report = await suite.run_full_evaluation(save_report=True)
         return {

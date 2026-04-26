@@ -19,23 +19,12 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 
 from config import settings
+from core_embedder import truncate_to_tokens, get_embedder
 
 log = logging.getLogger("lexios.cache")
 
 
-# Singleton embedding
-_embed_model: Optional[SentenceTransformer] = None
-_model_lock = threading.Lock()
-
-
-def _get_embedding_model() -> SentenceTransformer:
-    global _embed_model
-    if _embed_model is None:
-        with _model_lock:
-            if _embed_model is None:
-                log.info(f"Loading cache embedding model: {settings.EMBED_MODEL}")
-                _embed_model = SentenceTransformer(settings.EMBED_MODEL)
-    return _embed_model
+# LexiosCache now reuses the global embedder from core_embedder to save 2GB RAM.
 
 
 def _cosine_similarity(a: List[float], b: List[float]) -> float:
@@ -46,9 +35,8 @@ def _cosine_similarity(a: List[float], b: List[float]) -> float:
 
 @dataclass
 class CacheEntry:
-    __slots__ = ["question", "answer", "embedding", "timestamp", "hits", "ttl", "accessed_at", "category_hint"]
-    
     question: str
+
     answer: str
     embedding: List[float]
     timestamp: float = field(default_factory=time.time)
@@ -100,8 +88,9 @@ class LexiosCache:
         default_ttl_hours: Optional[int] = None,
     ):
         # Utilise settings par défaut si non spécifié
-        self.threshold = threshold if threshold is not None else settings.CACHE_THRESHOLD
-        self.max_size = max_size if max_size is not None else 500
+        self.threshold = threshold if threshold is not None else getattr(settings, "CACHE_THRESHOLD", 0.90)
+        self.max_size = max_size if max_size is not None else settings.CACHE_MAX_SIZE
+
         self.cache_dir = Path(cache_dir) if cache_dir else Path(settings.CACHE_DIR)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.default_ttl = (default_ttl_hours or settings.CACHE_TTL_HOURS) * 3600
@@ -116,9 +105,12 @@ class LexiosCache:
         return self.cache_dir / "semantic_cache.json"
 
     def _embed(self, text: str) -> List[float]:
+        """Embed text using shared global embedder."""
         try:
-            model = _get_embedding_model()
-            emb = model.encode([text[:512]], show_progress_bar=False)
+            embedder = get_embedder()
+            # Truncate to 128 tokens (respect sentence boundaries)
+            truncated = truncate_to_tokens(text, max_tokens=128, respect_sentence=True)
+            emb = embedder.encode_safe([truncated])
             return emb[0].tolist()
         except Exception as e:
             log.error(f"Embedding error: {e}")
@@ -201,34 +193,38 @@ class LexiosCache:
         with self._lock:
             if not answer or len(answer.strip()) < 20:
                 return
-            
-            # Déduplication (98% similarité)
+
+            # Embed once, reuse for deduplication and storage
             try:
                 q_emb = self._embed(question)
-                for entry in self._entries:
-                    if _cosine_similarity(q_emb, entry.embedding) > 0.98:
-                        entry.answer = answer
-                        entry.timestamp = time.time()
-                        self._save()
-                        return
             except Exception as e:
-                log.warning(f"Duplicate check error: {e}")
-            
+                log.warning(f"Embedding error on set(): {e}")
+                return
+
+            # Deduplication (98% similarity)
+            for entry in self._entries:
+                if _cosine_similarity(q_emb, entry.embedding) > 0.98:
+                    entry.answer = answer
+                    entry.timestamp = time.time()
+                    self._save()
+                    return
+
+            # Create cache entry (reuse q_emb, don't embed again)
             entry = CacheEntry(
                 question=question,
                 answer=answer,
-                embedding=self._embed(question),
+                embedding=q_emb,
                 ttl=(ttl_hours or settings.CACHE_TTL_HOURS) * 3600,
-                category_hint=category_hint
+                category_hint=category_hint,
             )
-            
+
             self._entries.append(entry)
-            
+
             if len(self._entries) > self.max_size:
                 self._entries.sort(key=lambda e: (e.accessed_at, e.hits))
                 self._entries.pop(0)
                 self._stats["evictions"] += 1
-            
+
             self._save()
 
     def invalidate_by_category(self, category: str) -> int:
