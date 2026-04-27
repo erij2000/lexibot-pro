@@ -10,12 +10,15 @@ import asyncio
 import logging
 import hashlib
 import re
+import sys
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from PIL import Image
 import aiohttp
+
+logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(levelname)s: %(message)s')
 
 try:
     from surya.ocr import run_ocr
@@ -36,6 +39,7 @@ except ImportError:
 
 from config import settings
 from core_embedder import count_tokens
+
 try:
     from doc_detector import DocumentDetector
 except ImportError:
@@ -43,6 +47,7 @@ except ImportError:
         confidence = 0.5
         doc_type = "Inconnu"
         category = "Général"
+
     class DocumentDetector:
         @staticmethod
         def detect(text, filename):
@@ -51,17 +56,19 @@ except ImportError:
 import threading
 _surya_lock = threading.Lock()
 
+
 def safe_json_parse(text: str) -> Dict[str, Any]:
     try:
         return json.loads(text)
-    except:
+    except Exception:
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
             try:
                 return json.loads(match.group())
-            except:
+            except Exception:
                 pass
         return {}
+
 
 log = logging.getLogger("lexios.ocr")
 SUPPORTED_PDF = {".pdf"}
@@ -185,8 +192,11 @@ class TextNormalizer:
 
     @staticmethod
     def extract_article_number(text: str) -> Optional[str]:
-        # More robust regex for various legal formats
-        m = re.search(r'(?:Article|Art\.?|art\.?|المادة|الفصل)\s*(?:n°|numéro|number|رقم)?\s*(\d+)', text, re.IGNORECASE)
+        m = re.search(
+            r'(?:Article|Art\.?|art\.?|المادة|الفصل)\s*(?:n°|numéro|number|رقم)?\s*(\d+)',
+            text,
+            re.IGNORECASE
+        )
         if m:
             return m.group(1)
         return None
@@ -275,7 +285,7 @@ class TextChunker:
                 current_positions.append((para_start, para_end))
                 current_size += para_tokens
                 char_offset = char_offset or para_start
-        
+
         if current_texts:
             chunk = self._create_chunk(
                 current_texts, current_positions, char_offset,
@@ -329,7 +339,7 @@ class TextChunker:
                 current_start = char_pos - len(last_sent) if last_sent else char_pos
             else:
                 current_text += " " + sent if current_text else sent
-            char_pos += sent_len + 1
+            char_pos += len(sent) + 1
 
         if current_text.strip():
             normalized = self.normalizer.normalize(current_text)
@@ -496,11 +506,11 @@ class LegalOCR:
     async def _call_llm_with_retry(self, text: str, context: str, max_retries: int = 2) -> Dict[str, Any]:
         async with self._llm_semaphore:
             prompt = f"""Analyse ce texte juridique tunisien. Retourne UNIQUEMENT JSON.
-    
-    Contexte: {context}
-    Texte: {text[:2000]}
-    
-    Format: {{"classification": "...", "parties": [], "articles_cites": [], "dates_importantes": [], "resume": "", "mots_cles": []}}"""
+
+Contexte: {context}
+Texte: {text[:2000]}
+
+Format: {{"classification": "...", "parties": [], "articles_cites": [], "dates_importantes": [], "resume": "", "mots_cles": []}}"""
 
             for attempt in range(max_retries):
                 try:
@@ -516,8 +526,11 @@ class LegalOCR:
                             "temperature": 0.1
                         }
                         headers = {"Authorization": f"Bearer {settings.GROQ_API_KEY}"}
-                        async with session.post("https://api.groq.com/openai/v1/chat/completions",
-                                                json=payload, headers=headers) as resp:
+                        async with session.post(
+                            "https://api.groq.com/openai/v1/chat/completions",
+                            json=payload,
+                            headers=headers
+                        ) as resp:
                             if resp.status == 200:
                                 data = await resp.json()
                                 content = data["choices"][0]["message"]["content"]
@@ -545,119 +558,164 @@ class LegalOCR:
             log.warning("LLM extraction returned empty after all retries")
             return {}
 
-    async def process_file(self, file_path: Path) -> Optional[LexiosDoc]:
-        async with self.semaphore:
-            path = Path(file_path)
-            if not path.exists():
-                log.error(f"File not found: {path}")
+    # ========================================================================
+    # MÉTHODE PRINCIPALE : process_file
+    # ========================================================================
+
+    async def process_file(self, path: Path) -> Optional[LexiosDoc]:
+        path = Path(path)
+        """Traite un fichier PDF ou image et retourne un LexiosDoc structuré."""
+        if not path.exists():
+            log.error(f"Fichier introuvable: {path}")
+            return None
+
+        ext = path.suffix.lower()
+        text = ""
+        engine = "unknown"
+        pages = 1
+        page_breaks = []
+
+        # =========================================================
+        # OCR PROCESSING (PDF + IMAGE)
+        # =========================================================
+
+        if ext in SUPPORTED_PDF:
+            try:
+                converter, model_loader = self._get_marker()
+                models = model_loader()
+
+                text, _, meta = converter(str(path), models)
+
+                print("TEXT OCR (PDF) =", text[:200])
+                print("LEN =", len(text))
+
+                engine = "marker"
+                pages = meta.get("num_pages", 1)
+
+                page_breaks = [m.start() for m in re.finditer(r"(?i)\bPage\s+\d+\b", text)]
+
+                if len(page_breaks) < pages - 1:
+                    avg_page_len = len(text) // pages if pages > 1 else len(text)
+                    page_breaks = [i * avg_page_len for i in range(1, pages)]
+
+            except Exception as e:
+                log.error(f"Marker failed: {e}")
+
+                try:
+                    import pdfplumber
+
+                    text_parts = []
+                    with pdfplumber.open(path) as pdf:
+                        pages = len(pdf.pages)
+                        for p in pdf.pages:
+                            t = p.extract_text()
+                            if t:
+                                text_parts.append(t)
+
+                    text = "\n".join(text_parts)
+                    engine = "pdfplumber_fallback"
+
+                    page_breaks = [m.start() for m in re.finditer(r"(?i)\bPage\s+\d+\b", text)]
+
+                    if len(page_breaks) < pages - 1:
+                        avg_page_len = len(text) // pages if pages > 1 else len(text)
+                        page_breaks = [i * avg_page_len for i in range(1, pages)]
+
+                except Exception as pdf_e:
+                    log.error(f"pdfplumber fallback failed: {pdf_e}")
+                    return None
+
+        elif ext in SUPPORTED_IMAGE:
+            if not HAS_SURYA:
+                log.error("Surya not installed")
                 return None
 
             try:
-                ext = path.suffix.lower()
-                text = ""
-                engine = "unknown"
-                pages = 1
-                page_breaks = []
+                log.info(f"OCR image: {path.name}")
 
-                if ext in SUPPORTED_PDF:
-                    try:
-                        converter, model_loader = self._get_marker()
-                        models = model_loader()
-                        text, _, meta = converter(str(path), models)
-                        engine = "marker"
-                        pages = meta.get("num_pages", 1)
-                        page_breaks = [m.start() for m in re.finditer(r"(?i)\bPage\s+\d+\b", text)]
-                        if len(page_breaks) < pages - 1:
-                            avg_page_len = len(text) // pages if pages > 1 else len(text)
-                            page_breaks = [i * avg_page_len for i in range(1, pages)]
-                    except Exception as e:
-                        log.error(f"Marker failed: {e}")
-                        try:
-                            import pdfplumber
-                            text_parts = []
-                            with pdfplumber.open(path) as pdf:
-                                pages = len(pdf.pages)
-                                for p in pdf.pages:
-                                    t = p.extract_text()
-                                    if t: text_parts.append(t)
-                            text = "\n".join(text_parts)
-                            engine = "pdfplumber_fallback"
-                            page_breaks = [m.start() for m in re.finditer(r"(?i)\bPage\s+\d+\b", text)]
-                            if len(page_breaks) < pages - 1:
-                                avg_page_len = len(text) // pages if pages > 1 else len(text)
-                                page_breaks = [i * avg_page_len for i in range(1, pages)]
-                        except ImportError:
-                            log.error("pdfplumber not available for fallback")
-                            return None
-                        except Exception as pdf_e:
-                            log.error(f"pdfplumber fallback failed: {pdf_e}")
-                            return None
-                elif ext in SUPPORTED_IMAGE and HAS_SURYA:
-                    try:
-                        img = Image.open(path).convert("RGB")
-                        models = self._get_surya()
-                        preds = run_ocr(
-                            [img], [["ar", "fr"]],
-                            models["det_model"], models["det_processor"],
-                            models["rec_model"], models["rec_processor"]
-                        )
-                        text = "\n".join(
-                            line.text for p in preds for line in p.text_lines if line.text.strip()
-                        )
-                        engine = "surya"
-                        pages = 1
-                    except Exception as e:
-                        log.error(f"Surya failed: {e}")
-                        return None
-                else:
-                    return None
+                img = Image.open(path).convert("RGB")
 
-                if len(text.strip()) < 50:
-                    log.warning(f"Text too short: {path.name}")
-                    return None
+                tmp_path = path.with_suffix(".jpg")
+                img.save(tmp_path, "JPEG")
+                img = Image.open(tmp_path)
 
-                drive = self._extract_topology(path)
-                lang = self._detect_language(text)
-                det = DocumentDetector.detect(text, path.name)
-                uid = self._compute_uid(text, str(path))
+                models = self._get_surya()
 
-                chunks = self.chunker.chunk(text, uid, page_breaks)
-                entities = self._extract_entities_simple(text)
-                structured = await self._call_llm_with_retry(text, drive.context_path)
+                print("HAS_SURYA =", HAS_SURYA)
+                print("MODELS LOADED =", bool(models))
 
-                nature = structured.get("classification", "Inconnu")
-                if nature == "Inconnu" and det.confidence >= 0.6:
-                    nature = det.doc_type
-
-                if drive.category == "Général" and det.category != "Général":
-                    drive = DriveContext(drive.hierarchy, drive.context_path, det.category, drive.subcategory)
-
-                doc = LexiosDoc(
-                    uid=uid,
-                    source_file=str(path),
-                    file_type="pdf" if engine == "marker" else "image",
-                    ocr_engine=engine,
-                    language=lang,
-                    pages=pages,
-                    drive=drive,
-                    nature=nature,
-                    doc_type_detected=det.doc_type,
-                    doc_type_confidence=det.confidence,
-                    is_structured=bool(structured.get("parties")),
-                    entities=entities,
-                    structured_data=structured,
-                    chunks=chunks,
-                    raw_text=text,
-                    processed_at=datetime.now().isoformat()
+                preds = run_ocr(
+                    [img],
+                    [["ar", "fr"]],
+                    models["det_model"],
+                    models["det_processor"],
+                    models["rec_model"],
+                    models["rec_processor"]
                 )
 
-                await self._write_output(doc, path)
-                log.info(f"✓ {path.name} | {len(chunks)} chunks | {len(set(c.article_id for c in chunks))} articles | {doc.nature}")
-                return doc
+                text = "\n".join(
+                    line.text
+                    for p in preds
+                    for line in p.text_lines
+                    if line.text.strip()
+                )
+
+                print("TEXT OCR (IMAGE) =", text[:200])
+                print("LEN =", len(text))
+
+                engine = "surya"
+                pages = 1
 
             except Exception as e:
-                log.error(f"✗ {path.name}: {e}", exc_info=True)
+                log.error(f"Surya failed on {path.name}: {e}", exc_info=True)
                 return None
+
+        else:
+            log.error(f"Format non supporté: {ext}")
+            return None
+
+        # =========================================================
+        # POST-TRAITEMENT & STRUCTURATION
+        # =========================================================
+
+        if not text or not text.strip():
+            log.warning(f"Texte vide après OCR: {path.name}")
+            return None
+
+        drive = self._extract_topology(path)
+        lang = self._detect_language(text)
+        det = DocumentDetector.detect(text, path.name)
+        uid = self._compute_uid(text, str(path))
+
+        chunks = self.chunker.chunk(text, uid, page_breaks)
+        entities = self._extract_entities_simple(text)
+        structured = await self._call_llm_with_retry(text, drive.context_path)
+
+        nature = structured.get("classification", "Inconnu")
+        if nature == "Inconnu" and det.confidence >= 0.6:
+            nature = det.doc_type
+
+        doc = LexiosDoc(
+            uid=uid,
+            source_file=str(path),
+            file_type=ext.lstrip("."),
+            ocr_engine=engine,
+            language=lang,
+            pages=pages,
+            drive=drive,
+            nature=nature,
+            doc_type_detected=det.doc_type,
+            doc_type_confidence=det.confidence,
+            is_structured=bool(structured),
+            entities=entities,
+            structured_data=structured,
+            chunks=chunks,
+            raw_text=text,
+            processed_at=datetime.now().isoformat()
+        )
+
+        await self._write_output(doc, path)
+        return doc
 
     async def _write_output(self, doc: LexiosDoc, path: Path):
         json_path = self.output_dir / f"{path.stem}_{doc.uid}.json"
@@ -678,9 +736,11 @@ class LegalOCR:
 
         log.info(f"OCR démarré: {len(files)} fichiers")
         sem = asyncio.Semaphore(10)
+
         async def process_with_sem(f):
             async with sem:
                 return await self.process_file(f)
+
         results = await asyncio.gather(*[process_with_sem(f) for f in files], return_exceptions=True)
         docs = [r for r in results if isinstance(r, LexiosDoc)]
         log.info(f"OCR terminé: {len(docs)}/{len(files)} succès")
@@ -690,6 +750,10 @@ class LegalOCR:
         if self._session and not self._session.closed:
             await self._session.close()
 
+
+# ============================================================================
+# FONCTION UTILITAIRE RACINE
+# ============================================================================
 
 async def process_lexios_drive(output_dir: str = None) -> List[LexiosDoc]:
     LEXIOS_PATH = r"G:\Mon Drive\lexiOS"

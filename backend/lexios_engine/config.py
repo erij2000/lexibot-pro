@@ -17,47 +17,41 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Union
 
-# Désactivation des alertes de parallélisme pour éviter les logs inutiles dans VS Code
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# ============================================================================
+# 1. LOGGING SETUP (avant toute utilisation)
+# ============================================================================
 
-# Setup logging professionnel
-LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
-logger = logging.getLogger("Lexios.Config")
+logger = logging.getLogger("lexios.config")
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+# ============================================================================
+# 2. PATH DEFINITIONS (avant la classe Settings)
+# ============================================================================
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+CACHE_DIR = BASE_DIR / "cache"
+LIGHTRAG_DIR = BASE_DIR / "lightrag_data"
+OCR_OUTPUT_DIR = BASE_DIR / "ocr_output"
+
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+LIGHTRAG_DIR.mkdir(parents=True, exist_ok=True)
+OCR_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# ============================================================================
+# 3. GPU DETECTION & SAFETY
+# ============================================================================
 
 try:
     import torch
 except ImportError:
-    logger.error("Torch non installé. Le mode IA sera extrêmement limité.")
     torch = None
 
-# ======================================================================
-# 1. GESTION DES CHEMINS (PATH MANAGEMENT)
-# ======================================================================
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
-UPLOAD_DIR = DATA_DIR / "uploads"
-CHROMA_DIR = DATA_DIR / "chroma_db"
-LOGS_DIR = BASE_DIR / "logs"
-
-CACHE_DIR = DATA_DIR / "cache"
-OCR_OUTPUT_DIR = DATA_DIR / "ocr_output"
-LIGHTRAG_DIR = DATA_DIR / "lightrag"
-
-# Création automatique de l'arborescence si absente
-for folder in [DATA_DIR, UPLOAD_DIR, CHROMA_DIR, LOGS_DIR, CACHE_DIR, OCR_OUTPUT_DIR, LIGHTRAG_DIR]:
-    folder.mkdir(parents=True, exist_ok=True)
-
-# ======================================================================
-# 2. DÉTECTION GPU & RESSOURCES (RESOURCE GUARD)
-# ======================================================================
-
-import functools
-
-@functools.lru_cache(max_size=1)
-def get_system_report() -> Dict[str, Any]:
-    """Analyse les capacités du MSI pour ajuster Lexibot."""
+def detect_gpu_config() -> Dict[str, Any]:
     config = {
         "device": "cpu",
         "batch_size": 16,
@@ -75,30 +69,31 @@ def get_system_report() -> Dict[str, Any]:
                 vram_gb = vram_bytes / (1024**3)
                 config["device"] = "cuda"
                 config["vram_total"] = round(vram_gb, 2)
-                
+
                 # Ajustement dynamique selon la puissance de la carte graphique
                 if vram_gb < 5:  # Cartes type GTX (ex: RTX 2050 4Go)
                     config.update({"batch_size": 8, "half_precision": True, "memory_fraction": 0.6})
-                elif vram_gb < 9: # Cartes type RTX 3060/4060
+                elif vram_gb < 9:  # Cartes type RTX 3060/4060
                     config.update({"batch_size": 24, "half_precision": True, "memory_fraction": 0.75})
-                else: # Cartes High-end
+                else:  # Cartes High-end
                     config.update({"batch_size": 32, "half_precision": False, "memory_fraction": 0.85})
             else:
                 logger.info("ℹ️ CUDA non disponible. Utilisation du CPU.")
         except Exception as e:
             logger.warning(f"⚠️ Erreur lors de l'accès au GPU : {e}. Fallback CPU sécurisé.")
-    
+
     return config
 
-_SYS = get_system_report()
 
-# ======================================================================
-# 3. SETTINGS CORE CLASS
-# ======================================================================
+_SYS = detect_gpu_config()
+
+# ========================================================================
+# 4. SETTINGS CORE CLASS
+# ========================================================================
 
 class Settings:
     """Conteneur principal des paramètres de l'application."""
-    
+
     # --- INFOS PROJET ---
     PROJECT_NAME: str = "Lexibot PRO"
     VERSION: str = "6.4.0"
@@ -118,7 +113,6 @@ class Settings:
     GROQ_MIN_INTERVAL: float = 3.0  # req/min (configurable)
 
     # --- EMBEDDINGS (BGE-M3) ---
-    # Ce modèle est très lourd (Multilingue), d'où l'importance des 24GB
     EMBED_MODEL: str = "BAAI/bge-m3"
     EMBED_DIM: int = 1024
     EMBED_DEVICE: str = _SYS["device"]
@@ -133,31 +127,29 @@ class Settings:
     RERANK_TOP_K: int = 10
     RERANK_WEIGHT: float = 0.45  # Influence sur le score final fusionné
 
-    # --- RETRIEVAL LOGIC (CORRECTION SYNCHRO) ---
-    # Ces paramètres doivent être appelés dans rag_service.py
+    # --- RETRIEVAL LOGIC ---
     RETRIEVAL_TOP_K: int = 50
     RETRIEVAL_FINAL_K: int = 12
     HYBRID_ALPHA: float = 0.5  # 0.5 = Équilibre parfait entre Vecteurs et BM25
-    
+
     # Options de fusion d'articles: "weighted", "mean", "max"
     ARTICLE_AGGREGATION: str = "weighted"
     ARTICLE_BOOST: float = 1.3
-    
+
     # --- PIPELINE & ORCHESTRATION ---
-    # Correction ligne 121: Synchronisation avec orchestrator.py
-    PIPELINE_MAX_CONTEXT_CHARS: int = 15000 
+    PIPELINE_MAX_CONTEXT_CHARS: int = 15000
     MAX_CONCURRENT_TASKS: int = 4
-    
+
     # --- CACHE & PERFORMANCE (24GB MSI OPTIMIZED) ---
     USE_CACHE: bool = True
-    CACHE_MAX_SIZE: int = 2500  # Augmenté grâce à ta nouvelle RAM
+    CACHE_MAX_SIZE: int = 2500
     CACHE_EXPIRATION_HOURS: int = 24
     GPU_MEMORY_FRACTION: float = _SYS["memory_fraction"]
     CLEAR_CACHE_ON_START: bool = False
 
-    # --- DOMAINES JURIDIQUES (TYPAGE FIX) ---
+    # --- DOMAINES JURIDIQUES ---
     DOMAINS: List[str] = [
-        "pénal", "civil", "commercial", 
+        "pénal", "civil", "commercial",
         "administratif", "constitutionnel", "social",
         "procédure", "immobilier", "fiscal"
     ]
@@ -191,26 +183,27 @@ class Settings:
     MAX_CONCURRENT_OCR: int = 2
     OLLAMA_MODEL: str = "qwen2.5:14b"
     OLLAMA_HOST: str = "http://localhost:11434"
-    CHROMA_COLLECTION: str = "lexios_legal_corpus" 
+    CHROMA_COLLECTION: str = "lexios_legal_corpus"
     CHROMA_DISTANCE: str = "cosine"
 
     def __repr__(self):
         return f"<Settings Lexios v{self.VERSION} | Device: {self.EMBED_DEVICE}>"
 
+
 # Instance unique des paramètres
 settings = Settings()
 
-# ======================================================================
-# 4. VALIDATION & MÉTRIQUES (HEALTH CHECK)
-# ======================================================================
+# ========================================================================
+# 5. VALIDATION & MÉTRIQUES (HEALTH CHECK)
+# ========================================================================
 
 def validate_environment() -> bool:
     """Vérifie que tout est prêt pour le décollage."""
     issues = []
-    
+
     if not settings.GROQ_API_KEY:
         issues.append("❌ Clé API GROQ_API_KEY absente.")
-    
+
     if settings.EMBED_DEVICE == "cpu" and _SYS["vram_total"] > 0:
         issues.append("⚠️ GPU détecté mais non utilisé par Torch (Problème de version?).")
 
@@ -231,9 +224,10 @@ def validate_environment() -> bool:
         for issue in issues:
             logger.warning(issue)
         return False
-    
+
     logger.info("✅ Configuration validée avec succès.")
     return True
+
 
 # Lancement du check automatique au chargement du module
 _ready = validate_environment()

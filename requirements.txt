@@ -38,7 +38,7 @@ diskcache>=5.6.0
 # ============================================================
 httpx>=0.27.0
 aiohttp>=3.9.0
-requests
+requests==2.32.4  # ← FIX: google-colab exige cette version exacte
 python-dotenv>=1.0.0
 
 # ============================================================
@@ -47,25 +47,46 @@ python-dotenv>=1.0.0
 pyspellchecker
 langdetect
 regex>=2023.12.25
+ftfy>=6.1.0  # ← AJOUTÉ: dépendance de marker-pdf
 
 # ============================================================
 # OCR PIPELINE
 # ============================================================
-marker-pdf>=0.2.0
-surya-ocr>=0.4.0
-pillow>=10.0.0
-pillow-heif>=0.13.0
+marker-pdf==1.10.2  # ← FIX: version stable testée
+surya-ocr==0.17.1   # ← FIX: version stable testée
+pdfplumber>=0.11.0  # ← AJOUTÉ: fallback PDF
+pymupdf>=1.27.0     # ← AJOUTÉ: fallback PDF rapide
+pillow==10.4.0      # ← FIX: version compatible surya/marker
+pillow-heif==0.22.0 # ← FIX: support HEIC/HEIF
 pdf2image>=1.16.0
 pypdf>=4.0.0
+pypdfium2==4.30.0   # ← AJOUTÉ: dépendance stricte de surya-ocr
+filetype>=1.2.0     # ← AJOUTÉ: détection de format (surya)
 
 # ============================================================
-# DEEP LEARNING
+# DEEP LEARNING — CUDA 12.4 (Colab / GPU)
 # ============================================================
-torch>=2.2.0
-torchvision>=0.17.0
-numpy>=1.26.0
+# ⚠️ NE PAS utiliser torch>=2.2.0 seul → installe la version CPU !
+# Installer avec: pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0+cu124      # ← FIX: CUDA 12.4 explicite
+torchvision==0.21.0+cu124  # ← FIX: match torch
+torchaudio==2.6.0+cu124    # ← AJOUTÉ: optionnel mais recommandé
+transformers>=4.45.2,<5.0  # ← AJOUTÉ: pour BGE-M3 et surya
+einops>=0.8.0           # ← AJOUTÉ: dépendance transformers/surya
+accelerate>=0.20.0      # ← AJOUTÉ: pour chargement modèles HF
+huggingface-hub>=0.34.0 # ← AJOUTÉ: téléchargement modèles
+safetensors>=0.4.0      # ← AJOUTÉ: serialization transformers
+tokenizers>=0.22.0      # ← AJOUTÉ: tokenization rapide
+
+# ============================================================
+# CPU / NUMPY / ML
+# ============================================================
+numpy>=1.26.0,<2.2      # ← FIX: compatibilité torch 2.6
+scipy>=1.12.0           # ← AJOUTÉ: dépendance scikit-learn
 scikit-learn>=1.4.0
 tqdm>=4.66.0
+joblib>=1.3.0           # ← AJOUTÉ: parallelisme scikit-learn
+threadpoolctl>=3.1.0    # ← AJOUTÉ: contrôle threads
 
 # ============================================================
 # EVALUATION (RAGAS)
@@ -80,3 +101,4 @@ pytest-asyncio>=0.23.0
 # ============================================================
 orjson>=3.9.0
 python-dateutil
+platformdirs>=4.3.0     # ← AJOUTÉ: chemins cross-platform (surya)
