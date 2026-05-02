@@ -2,6 +2,13 @@
 ocr_pipeline.py — Lexios Brain One v9 (Article-Aware)
 ======================================================
 Extraction OCR avec structuration article-aware.
+
+FIXES v9.1:
+  - PDF CID garbage: pymupdf primary → pdfplumber fallback → marker last resort
+    + aggressive CID stripping post-extraction
+  - Surya 'pad_token_id' AttributeError: monkey-patch SuryaDecoderConfig
+    before loading FoundationPredictor
+  - PIL UnidentifiedImageError on corrupt/truncated JPG: skip gracefully
 """
 
 import os
@@ -20,7 +27,33 @@ import aiohttp
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(levelname)s: %(message)s')
 
+# ============================================================================
+# SURYA — patch pad_token_id BEFORE importing FoundationPredictor
+# ============================================================================
+# Root cause: surya text_recognition model 2025_09_23 ships a SuryaDecoderConfig
+# that omits pad_token_id. The transformers ModelingUtils __init__ reads it and
+# raises AttributeError. We monkey-patch the class to return a default (0) when
+# the attribute is missing, so the model loads fine.
+def _patch_surya_decoder_config():
+    try:
+        from surya.common.surya.decoder import SuryaDecoderConfig  # type: ignore
+        _orig_getattr = SuryaDecoderConfig.__getattribute__
+
+        def _safe_getattr(self, name):
+            try:
+                return _orig_getattr(self, name)
+            except AttributeError:
+                if name == "pad_token_id":
+                    return 0          # safe default — unused at inference
+                raise
+
+        SuryaDecoderConfig.__getattribute__ = _safe_getattr
+        return True
+    except Exception:
+        return False
+
 try:
+    _patch_surya_decoder_config()
     from surya.recognition import RecognitionPredictor
     from surya.detection import DetectionPredictor
     from surya.foundation import FoundationPredictor
@@ -72,6 +105,30 @@ def safe_json_parse(text: str) -> Dict[str, Any]:
 log = logging.getLogger("lexios.ocr")
 SUPPORTED_PDF = {".pdf"}
 SUPPORTED_IMAGE = {".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp", ".heic", ".heif"}
+
+
+# ============================================================================
+# CID CLEANING UTILITY
+# ============================================================================
+# PDFs with non-embedded / CID-only fonts produce garbage like (cid:12)(cid:7)…
+# This pattern strips those tokens and collapses the leftover whitespace.
+_CID_RE = re.compile(r'\(cid:\d+\)', re.IGNORECASE)
+
+def clean_cid(text: str) -> str:
+    """Remove (cid:N) artefacts and normalise whitespace."""
+    cleaned = _CID_RE.sub(' ', text)
+    # collapse runs of spaces/newlines
+    cleaned = re.sub(r'[ \t]+', ' ', cleaned)
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned.strip()
+
+def text_is_cid_garbage(text: str) -> bool:
+    """Return True if more than 30 % of tokens are (cid:N)."""
+    if not text:
+        return True
+    cid_hits = len(_CID_RE.findall(text))
+    words = len(text.split())
+    return words > 0 and (cid_hits / words) > 0.30
 
 
 # ============================================================================
@@ -432,7 +489,6 @@ class LegalOCR:
             from marker.converters.pdf import PdfConverter
             from marker.models import create_model_dict
             log.info("Chargement Marker (Modern API)...")
-            # Use CPU by default if GPU not detected
             device = settings.EMBED_DEVICE
             self._marker_models = PdfConverter(artifact_dict=create_model_dict(device=device))
         return self._marker_models
@@ -559,6 +615,80 @@ Format: {{"classification": "...", "parties": [], "articles_cites": [], "dates_i
             return {}
 
     # ========================================================================
+    # PDF EXTRACTION — 3-layer strategy with CID cleaning
+    # ========================================================================
+
+    def _extract_pdf_text(self, path: Path) -> Tuple[str, str, int]:
+        """
+        Try three methods in order until we get clean text.
+        Returns (text, engine_name, page_count).
+
+        Order:
+          1. pymupdf  — fastest, best Arabic/CID-font support
+          2. pdfplumber — slower but good for complex layouts
+          3. marker   — ML-based, slowest, last resort
+        """
+        # --- 1. pymupdf (fitz) ---
+        try:
+            import fitz  # pymupdf
+            doc = fitz.open(str(path))
+            pages = len(doc)
+            parts = []
+            for page in doc:
+                t = page.get_text("text")
+                if t:
+                    parts.append(t)
+            doc.close()
+            raw = "\n".join(parts)
+            text = clean_cid(raw)
+            if text and not text_is_cid_garbage(text):
+                log.info(f"PDF extracted via pymupdf: {path.name} ({pages} pages, {len(text)} chars)")
+                return text, "pymupdf", pages
+            else:
+                log.warning(f"pymupdf produced CID garbage for {path.name}, trying pdfplumber…")
+        except ImportError:
+            log.warning("pymupdf not installed, skipping to pdfplumber")
+        except Exception as e:
+            log.warning(f"pymupdf failed on {path.name}: {e}")
+
+        # --- 2. pdfplumber ---
+        try:
+            import pdfplumber
+            parts = []
+            with pdfplumber.open(path) as pdf:
+                pages = len(pdf.pages)
+                for p in pdf.pages:
+                    t = p.extract_text()
+                    if t:
+                        parts.append(t)
+            raw = "\n".join(parts)
+            text = clean_cid(raw)
+            if text and not text_is_cid_garbage(text):
+                log.info(f"PDF extracted via pdfplumber: {path.name} ({pages} pages, {len(text)} chars)")
+                return text, "pdfplumber", pages
+            else:
+                log.warning(f"pdfplumber produced CID garbage for {path.name}, trying marker…")
+        except ImportError:
+            log.warning("pdfplumber not installed, skipping to marker")
+        except Exception as e:
+            log.warning(f"pdfplumber failed on {path.name}: {e}")
+
+        # --- 3. marker (ML OCR) ---
+        try:
+            converter = self._get_marker()
+            rendered = converter(str(path))
+            raw = rendered.markdown
+            text = clean_cid(raw)
+            pages = getattr(converter, "page_count", 1)
+            if text:
+                log.info(f"PDF extracted via marker: {path.name} ({pages} pages, {len(text)} chars)")
+                return text, "marker", pages
+        except Exception as e:
+            log.error(f"marker failed on {path.name}: {e}")
+
+        return "", "failed", 1
+
+    # ========================================================================
     # MÉTHODE PRINCIPALE : process_file
     # ========================================================================
 
@@ -580,86 +710,58 @@ Format: {{"classification": "...", "parties": [], "articles_cites": [], "dates_i
         # =========================================================
 
         if ext in SUPPORTED_PDF:
-            try:
-                converter = self._get_marker()
-                # marker-pdf 1.10.2 returns a RenderedDocument object
-                rendered = converter(str(path))
-                text = rendered.markdown
-                
-                print("TEXT OCR (PDF) =", text[:200])
-                print("LEN =", len(text))
+            text, engine, pages = self._extract_pdf_text(path)
 
-                engine = "marker"
-                pages = getattr(converter, "page_count", 1)
+            if not text:
+                log.error(f"Toutes les méthodes PDF ont échoué pour: {path.name}")
+                return None
 
-                page_breaks = [m.start() for m in re.finditer(r"(?i)\bPage\s+\d+\b", text)]
-
-                if len(page_breaks) < pages - 1:
-                    avg_page_len = len(text) // pages if pages > 1 else len(text)
-                    page_breaks = [i * avg_page_len for i in range(1, pages)]
-
-            except Exception as e:
-                log.error(f"Marker failed: {e}")
-
-                try:
-                    import pdfplumber
-
-                    text_parts = []
-                    with pdfplumber.open(path) as pdf:
-                        pages = len(pdf.pages)
-                        for p in pdf.pages:
-                            t = p.extract_text()
-                            if t:
-                                text_parts.append(t)
-
-                    text = "\n".join(text_parts)
-                    engine = "pdfplumber_fallback"
-
-                    page_breaks = [m.start() for m in re.finditer(r"(?i)\bPage\s+\d+\b", text)]
-
-                    if len(page_breaks) < pages - 1:
-                        avg_page_len = len(text) // pages if pages > 1 else len(text)
-                        page_breaks = [i * avg_page_len for i in range(1, pages)]
-
-                except Exception as pdf_e:
-                    log.error(f"pdfplumber fallback failed: {pdf_e}")
-                    return None
+            # Reconstruct page_breaks from text
+            page_breaks = [m.start() for m in re.finditer(r"(?i)\bPage\s+\d+\b", text)]
+            if len(page_breaks) < pages - 1:
+                avg_page_len = len(text) // pages if pages > 1 else len(text)
+                page_breaks = [i * avg_page_len for i in range(1, pages)]
 
         elif ext in SUPPORTED_IMAGE:
             if not HAS_SURYA:
                 log.error("Surya not installed")
                 return None
 
+            tmp_path = None
             try:
                 log.info(f"OCR image: {path.name}")
 
-                # 1. Ouverture de l'image (HEIC ou JPG iPhone)
+                # 1. Open image — pillow_heif handles HEIC; PIL handles JPEG/PNG
+                #    PIL.UnidentifiedImageError means the file is corrupt/truncated
+                try:
+                    raw_img = Image.open(path)
+                    raw_img.verify()          # detect truncated files early
+                except Exception as open_err:
+                    log.error(f"Image unreadable (corrupt/truncated?): {path.name} — {open_err}")
+                    return None
+
+                # Re-open after verify() (verify closes the file)
                 with Image.open(path) as raw_img:
-                    # Conversion en RGB
                     rgb_img = raw_img.convert("RGB")
-                    
-                    # TECHNIQUE ANTI-BUG : On recrée l'image à partir des pixels bruts 
-                    # Cela supprime les métadonnées EXIF d'Apple qui font planter l'encodeur JPEG
-                    img = Image.frombytes('RGB', rgb_img.size, rgb_img.tobytes())
+                    # Strip Apple EXIF metadata that confuses JPEG encoder
+                    img_clean = Image.frombytes('RGB', rgb_img.size, rgb_img.tobytes())
 
-                    # 2. Sauvegarde sécurisée du fichier temporaire
-                    tmp_path = path.with_suffix(".tmp.jpg")
-                    # On force des paramètres standards pour éviter l'erreur des 16 arguments
-                    img.save(tmp_path, format="JPEG", quality=95, optimize=True)
-                
-                # 3. Réouverture du fichier propre pour Surya
-                img = Image.open(tmp_path)
-                
-                # Chargement des modèles Surya
-                models = self._get_surya()
-                print("HAS_SURYA =", HAS_SURYA)
-                print("MODELS LOADED =", bool(models))
+                # 2. Save to clean temp JPEG
+                tmp_path = path.with_suffix(".tmp.jpg")
+                img_clean.save(tmp_path, format="JPEG", quality=95, optimize=True)
 
-                predictions_by_image = models["rec"](
-                    [img],
-                    task_names=[TaskNames.ocr_with_boxes],
-                    det_predictor=models["det"]
-                )
+                # 3. Run Surya on the clean JPEG
+                with Image.open(tmp_path) as img:
+                    models = self._get_surya()
+                    if models is None:
+                        log.error("Surya models could not be loaded")
+                        return None
+
+                    predictions_by_image = models["rec"](
+                        [img],
+                        task_names=[TaskNames.ocr_with_boxes],
+                        det_predictor=models["det"]
+                    )
 
                 text = "\n".join(
                     line.text
@@ -668,15 +770,21 @@ Format: {{"classification": "...", "parties": [], "articles_cites": [], "dates_i
                     if line.text.strip()
                 )
 
-                print("TEXT OCR (IMAGE) =", text[:200])
-                print("LEN =", len(text))
-
+                log.info(f"OCR image OK: {path.name} — {len(text)} chars")
                 engine = "surya"
                 pages = 1
 
             except Exception as e:
                 log.error(f"Surya failed on {path.name}: {e}", exc_info=True)
                 return None
+
+            finally:
+                # 4. Always clean up temp file
+                if tmp_path and tmp_path.exists():
+                    try:
+                        os.remove(tmp_path)
+                    except Exception as cleanup_e:
+                        log.warning(f"Could not delete temp file {tmp_path}: {cleanup_e}")
 
         else:
             log.error(f"Format non supporté: {ext}")
