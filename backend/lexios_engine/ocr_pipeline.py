@@ -633,14 +633,25 @@ Format: {{"classification": "...", "parties": [], "articles_cites": [], "dates_i
             try:
                 log.info(f"OCR image: {path.name}")
 
-                img = Image.open(path).convert("RGB")
+                # 1. Ouverture de l'image (HEIC ou JPG iPhone)
+                with Image.open(path) as raw_img:
+                    # Conversion en RGB
+                    rgb_img = raw_img.convert("RGB")
+                    
+                    # TECHNIQUE ANTI-BUG : On recrée l'image à partir des pixels bruts 
+                    # Cela supprime les métadonnées EXIF d'Apple qui font planter l'encodeur JPEG
+                    img = Image.frombytes('RGB', rgb_img.size, rgb_img.tobytes())
 
-                tmp_path = path.with_suffix(".jpg")
-                img.save(tmp_path, "JPEG")
+                    # 2. Sauvegarde sécurisée du fichier temporaire
+                    tmp_path = path.with_suffix(".tmp.jpg")
+                    # On force des paramètres standards pour éviter l'erreur des 16 arguments
+                    img.save(tmp_path, format="JPEG", quality=95, optimize=True)
+                
+                # 3. Réouverture du fichier propre pour Surya
                 img = Image.open(tmp_path)
-
+                
+                # Chargement des modèles Surya
                 models = self._get_surya()
-
                 print("HAS_SURYA =", HAS_SURYA)
                 print("MODELS LOADED =", bool(models))
 
