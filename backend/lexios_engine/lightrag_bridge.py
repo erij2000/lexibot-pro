@@ -417,6 +417,7 @@ class LightRAGBridge:
 
             # Call LLM with structured messages
             return await self.llm(
+                prompt="",  # Fix missing positional arg
                 messages=messages,
                 temperature=kwargs.get("temperature", 0.1),
                 max_tokens=kwargs.get("max_tokens", 2048),

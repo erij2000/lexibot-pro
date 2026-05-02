@@ -58,9 +58,10 @@ DOC_PATTERNS: Dict[str, Dict] = {
         "ar": [
             r"باسم الشعب التونسي",
             r"(?:المحكمة الابتدائية|محكمة)",
-            r"(?:حكمت المحكمة|تقضي|قضت)",
-            r"(?:لهذه الأسباب|لهذه الأسباب)",
+            r"(?:حكمت المحكمة|تقضي|قضت|بتحويز|إستعجاليا)",
+            r"(?:لهذه الأسباب|لهذه الأسباب|وبناء عليه)",
             r"حكم\s+عدد\s*\d+",
+            r"قضية\s+رقم\s*\d+",
         ],
         "category": "Général",
     },
@@ -90,8 +91,8 @@ DOC_PATTERNS: Dict[str, Dict] = {
         ],
         "ar": [
             r"أمر\s+عدد\s*\d+",
-            r"(?:قاضي التحقيق|قضاء الأمور المستعجلة)",
-            r"(?:نأمر|يُؤمر)",
+            r"(?:قاضي التحقيق|قضاء الأمور المستعجلة|قاضي الأسرة)",
+            r"(?:نأمر|يُؤمر|أمر الانتزاع|انتزاع)",
         ],
         "category": "Général",
     },
@@ -273,7 +274,7 @@ class DocumentDetector:
     def _detect_language(text: str) -> str:
         ar = sum(1 for c in text if "\u0600" <= c <= "\u06FF")
         ratio = ar / max(len(text), 1)
-        return "ar" if ratio > 0.45 else ("mixed" if ratio > 0.1 else "fr")
+        return "ar" if ratio > 0.3 else ("mixed" if ratio > 0.1 else "fr")
 
     @classmethod
     def classify_batch(cls, texts: List[Tuple[str, str]]) -> List[DetectionResult]:

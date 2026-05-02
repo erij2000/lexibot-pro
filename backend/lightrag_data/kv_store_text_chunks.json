@@ -1,0 +1,16 @@
+{
+  "chunk-2fe6ae711a622abb39864c14edcad2a8": {
+    "tokens": 75,
+    "content": "الفصل 1 : تشتمل ميزانية الدولة على نفقات وموارد الدولة. ويقع ترخيصها بمقتضى قانون المالية.\nالفصل 2 : يمكن أن ترصد اعتمادات ميزانية الدولة لبرامج أو لمهام.\nالفصل 3 : تتكون موارد ميزانية الدولة من المداخيل الجبائية.",
+    "chunk_order_index": 0,
+    "full_doc_id": "doc-2fe6ae711a622abb39864c14edcad2a8",
+    "file_path": "unknown_source",
+    "llm_cache_list": [
+      "default:extract:d46d12eabde0979dc1f91caa90afb94d",
+      "default:extract:3ecdd5a44f1572bd159c7267e8f107f1"
+    ],
+    "create_time": 1777679042,
+    "update_time": 1777679048,
+    "_id": "chunk-2fe6ae711a622abb39864c14edcad2a8"
+  }
+}

@@ -1,7 +1,7 @@
 """
-lexios_engine/config.py — Lexios Engine Professional Suite v6.4
+lexios_engine/config.py 
 =============================================================
-Auteur: Erij Kacem | IIT GLID
+
 Optimisé pour: 24GB RAM (MSI) | BGE-M3 Hybrid Search | Groq Qwen-2.5
 =============================================================
 Ce fichier centralise toute l'intelligence de configuration du backend.
@@ -13,6 +13,16 @@ import sys
 import logging
 import platform
 import multiprocessing
+
+# Windows console unicode fix
+if platform.system() == "Windows":
+    try:
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8')
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Union
@@ -36,10 +46,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 CACHE_DIR = BASE_DIR / "cache"
 LIGHTRAG_DIR = BASE_DIR / "lightrag_data"
 OCR_OUTPUT_DIR = BASE_DIR / "ocr_output"
+CHROMA_DIR = CACHE_DIR / "chroma_db"
 
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 LIGHTRAG_DIR.mkdir(parents=True, exist_ok=True)
 OCR_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
 # ============================================================================
 # 3. GPU DETECTION & SAFETY
@@ -104,7 +116,7 @@ class Settings:
     LLM_PROVIDER: str = "groq"
     GROQ_API_KEY: Optional[str] = os.getenv("GROQ_API_KEY")
     GROQ_MODEL: str = os.getenv("GROQ_MODEL", "qwen-2.5-32b")
-    GROQ_BACKUP_MODEL: str = "llama-3.1-70b-versatile"
+    GROQ_BACKUP_MODEL: str = "llama-3.3-70b-versatile"
     LLM_TIMEOUT: int = 60
     GROQ_TEMPERATURE: float = 0.1
     GROQ_MAX_TOKENS: int = 4096
@@ -117,7 +129,7 @@ class Settings:
     EMBED_DIM: int = 1024
     EMBED_DEVICE: str = _SYS["device"]
     EMBED_BATCH_SIZE: int = _SYS["batch_size"]
-    EMBED_HALF_PRECISION: bool = _SYS["half_precision"]
+    EMBED_HALF_PRECISION: bool = False # Forcé à False pour la compatibilité XLM-Roberta / BGE-M3
     EMBED_NORMALIZE: bool = True
     EMBED_MAX_LENGTH: int = 8192  # BGE-M3 supporte de longs contextes
 
@@ -185,6 +197,7 @@ class Settings:
     OLLAMA_HOST: str = "http://localhost:11434"
     CHROMA_COLLECTION: str = "lexios_legal_corpus"
     CHROMA_DISTANCE: str = "cosine"
+    CHROMA_DIR: str = str(CHROMA_DIR)
 
     def __repr__(self):
         return f"<Settings Lexios v{self.VERSION} | Device: {self.EMBED_DEVICE}>"

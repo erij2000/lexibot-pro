@@ -1,0 +1,38 @@
+{
+  "doc-2fe6ae711a622abb39864c14edcad2a8": {
+    "relation_pairs": [
+      [
+        "State Budget",
+        "State Expenditures"
+      ],
+      [
+        "Budget Credits",
+        "State Budget"
+      ],
+      [
+        "Finance Law",
+        "State Budget"
+      ],
+      [
+        "State Budget",
+        "State Resources"
+      ],
+      [
+        "Budget Credits",
+        "Programs"
+      ],
+      [
+        "State Resources",
+        "Tax Revenues"
+      ],
+      [
+        "Budget Credits",
+        "Tasks"
+      ]
+    ],
+    "count": 7,
+    "create_time": 1777679049,
+    "update_time": 1777679049,
+    "_id": "doc-2fe6ae711a622abb39864c14edcad2a8"
+  }
+}

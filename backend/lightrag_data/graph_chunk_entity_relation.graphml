@@ -1,0 +1,154 @@
+<?xml version='1.0' encoding='utf-8'?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd">
+  <key id="d13" for="edge" attr.name="truncate" attr.type="string" />
+  <key id="d12" for="edge" attr.name="created_at" attr.type="long" />
+  <key id="d11" for="edge" attr.name="file_path" attr.type="string" />
+  <key id="d10" for="edge" attr.name="source_id" attr.type="string" />
+  <key id="d9" for="edge" attr.name="keywords" attr.type="string" />
+  <key id="d8" for="edge" attr.name="description" attr.type="string" />
+  <key id="d7" for="edge" attr.name="weight" attr.type="double" />
+  <key id="d6" for="node" attr.name="truncate" attr.type="string" />
+  <key id="d5" for="node" attr.name="created_at" attr.type="long" />
+  <key id="d4" for="node" attr.name="file_path" attr.type="string" />
+  <key id="d3" for="node" attr.name="source_id" attr.type="string" />
+  <key id="d2" for="node" attr.name="description" attr.type="string" />
+  <key id="d1" for="node" attr.name="entity_type" attr.type="string" />
+  <key id="d0" for="node" attr.name="entity_id" attr.type="string" />
+  <graph edgedefault="undirected">
+    <node id="State Budget">
+      <data key="d0">State Budget</data>
+      <data key="d1">concept</data>
+      <data key="d2">The state budget consists of state expenditures and resources, licensed under the finance law.</data>
+      <data key="d3">chunk-2fe6ae711a622abb39864c14edcad2a8</data>
+      <data key="d4">unknown_source</data>
+      <data key="d5">1777679048</data>
+      <data key="d6" />
+    </node>
+    <node id="Finance Law">
+      <data key="d0">Finance Law</data>
+      <data key="d1">artifact</data>
+      <data key="d2">The finance law is the legal basis for licensing the state budget.</data>
+      <data key="d3">chunk-2fe6ae711a622abb39864c14edcad2a8</data>
+      <data key="d4">unknown_source</data>
+      <data key="d5">1777679048</data>
+      <data key="d6" />
+    </node>
+    <node id="State Expenditures">
+      <data key="d0">State Expenditures</data>
+      <data key="d1">concept</data>
+      <data key="d2">State expenditures are part of the state budget.</data>
+      <data key="d3">chunk-2fe6ae711a622abb39864c14edcad2a8</data>
+      <data key="d4">unknown_source</data>
+      <data key="d5">1777679048</data>
+      <data key="d6" />
+    </node>
+    <node id="State Resources">
+      <data key="d0">State Resources</data>
+      <data key="d1">concept</data>
+      <data key="d2">State resources are part of the state budget, composed of tax revenues.</data>
+      <data key="d3">chunk-2fe6ae711a622abb39864c14edcad2a8</data>
+      <data key="d4">unknown_source</data>
+      <data key="d5">1777679048</data>
+      <data key="d6" />
+    </node>
+    <node id="Tax Revenues">
+      <data key="d0">Tax Revenues</data>
+      <data key="d1">data</data>
+      <data key="d2">Tax revenues are the primary source of state resources.</data>
+      <data key="d3">chunk-2fe6ae711a622abb39864c14edcad2a8</data>
+      <data key="d4">unknown_source</data>
+      <data key="d5">1777679048</data>
+      <data key="d6" />
+    </node>
+    <node id="Budget Credits">
+      <data key="d0">Budget Credits</data>
+      <data key="d1">concept</data>
+      <data key="d2">Budget credits can be allocated for programs or tasks.</data>
+      <data key="d3">chunk-2fe6ae711a622abb39864c14edcad2a8</data>
+      <data key="d4">unknown_source</data>
+      <data key="d5">1777679048</data>
+      <data key="d6" />
+    </node>
+    <node id="Programs">
+      <data key="d0">Programs</data>
+      <data key="d1">concept</data>
+      <data key="d2">Programs are one of the allocations of budget credits.</data>
+      <data key="d3">chunk-2fe6ae711a622abb39864c14edcad2a8</data>
+      <data key="d4">unknown_source</data>
+      <data key="d5">1777679048</data>
+      <data key="d6" />
+    </node>
+    <node id="Tasks">
+      <data key="d0">Tasks</data>
+      <data key="d1">concept</data>
+      <data key="d2">Tasks are one of the allocations of budget credits.</data>
+      <data key="d3">chunk-2fe6ae711a622abb39864c14edcad2a8</data>
+      <data key="d4">unknown_source</data>
+      <data key="d5">1777679048</data>
+      <data key="d6" />
+    </node>
+    <edge source="State Budget" target="Finance Law">
+      <data key="d7">1.0</data>
+      <data key="d8">The state budget is licensed under the finance law.</data>
+      <data key="d9">legal framework,licensing</data>
+      <data key="d10">chunk-2fe6ae711a622abb39864c14edcad2a8</data>
+      <data key="d11">unknown_source</data>
+      <data key="d12">1777679049</data>
+      <data key="d13" />
+    </edge>
+    <edge source="State Budget" target="State Expenditures">
+      <data key="d7">1.0</data>
+      <data key="d8">State expenditures are a component of the state budget.</data>
+      <data key="d9">composition,financial planning</data>
+      <data key="d10">chunk-2fe6ae711a622abb39864c14edcad2a8</data>
+      <data key="d11">unknown_source</data>
+      <data key="d12">1777679049</data>
+      <data key="d13" />
+    </edge>
+    <edge source="State Budget" target="State Resources">
+      <data key="d7">1.0</data>
+      <data key="d8">State resources are a component of the state budget.</data>
+      <data key="d9">composition,financial planning</data>
+      <data key="d10">chunk-2fe6ae711a622abb39864c14edcad2a8</data>
+      <data key="d11">unknown_source</data>
+      <data key="d12">1777679049</data>
+      <data key="d13" />
+    </edge>
+    <edge source="State Budget" target="Budget Credits">
+      <data key="d7">1.0</data>
+      <data key="d8">Budget credits are allocated within the state budget for programs or tasks.</data>
+      <data key="d9">allocation,financial management</data>
+      <data key="d10">chunk-2fe6ae711a622abb39864c14edcad2a8</data>
+      <data key="d11">unknown_source</data>
+      <data key="d12">1777679049</data>
+      <data key="d13" />
+    </edge>
+    <edge source="State Resources" target="Tax Revenues">
+      <data key="d7">1.0</data>
+      <data key="d8">Tax revenues are a primary source of state resources.</data>
+      <data key="d9">financial composition,revenue source</data>
+      <data key="d10">chunk-2fe6ae711a622abb39864c14edcad2a8</data>
+      <data key="d11">unknown_source</data>
+      <data key="d12">1777679049</data>
+      <data key="d13" />
+    </edge>
+    <edge source="Budget Credits" target="Programs">
+      <data key="d7">1.0</data>
+      <data key="d8">Budget credits can be allocated for programs.</data>
+      <data key="d9">allocation,financial management</data>
+      <data key="d10">chunk-2fe6ae711a622abb39864c14edcad2a8</data>
+      <data key="d11">unknown_source</data>
+      <data key="d12">1777679049</data>
+      <data key="d13" />
+    </edge>
+    <edge source="Budget Credits" target="Tasks">
+      <data key="d7">1.0</data>
+      <data key="d8">Budget credits can be allocated for tasks.</data>
+      <data key="d9">allocation,financial management</data>
+      <data key="d10">chunk-2fe6ae711a622abb39864c14edcad2a8</data>
+      <data key="d11">unknown_source</data>
+      <data key="d12">1777679049</data>
+      <data key="d13" />
+    </edge>
+  </graph>
+</graphml>

@@ -1,0 +1,70 @@
+{
+  "doc-2fe6ae711a622abb39864c14edcad2a8": {
+    "status": "processed",
+    "chunks_count": 1,
+    "chunks_list": [
+      "chunk-2fe6ae711a622abb39864c14edcad2a8"
+    ],
+    "content_summary": "الفصل 1 : تشتمل ميزانية الدولة على نفقات وموارد الدولة. ويقع ترخيصها بمقتضى قانون المالية.\nالفصل 2 : يمكن أن ترصد اعتمادات ميزانية الدولة لبرامج أو لمهام.\nالفصل 3 : تتكون موارد ميزانية الدولة من المداخيل الجبائية.",
+    "content_length": 213,
+    "created_at": "2026-05-01T23:39:30.664751+00:00",
+    "updated_at": "2026-05-01T23:44:09.638009+00:00",
+    "file_path": "unknown_source",
+    "track_id": "insert_20260502_003930_78feaf47",
+    "metadata": {
+      "processing_start_time": 1777679042,
+      "processing_end_time": 1777679049
+    }
+  },
+  "dup-446baee423565e514c75d2e8556615b6": {
+    "status": "failed",
+    "content_summary": "[DUPLICATE] Original document: doc-2fe6ae711a622abb39864c14edcad2a8",
+    "content_length": 213,
+    "chunks_count": 0,
+    "chunks_list": [],
+    "created_at": "2026-05-01T23:41:05.932505+00:00",
+    "updated_at": "2026-05-01T23:41:05.932505+00:00",
+    "file_path": "unknown_source",
+    "track_id": "insert_20260502_004105_786b337f",
+    "error_msg": "Content already exists. Original doc_id: doc-2fe6ae711a622abb39864c14edcad2a8, Status: failed",
+    "metadata": {
+      "is_duplicate": true,
+      "original_doc_id": "doc-2fe6ae711a622abb39864c14edcad2a8",
+      "original_track_id": "insert_20260502_003930_78feaf47"
+    }
+  },
+  "dup-b05a959a788bd85e4904cd83776a3301": {
+    "status": "failed",
+    "content_summary": "[DUPLICATE] Original document: doc-2fe6ae711a622abb39864c14edcad2a8",
+    "content_length": 213,
+    "chunks_count": 0,
+    "chunks_list": [],
+    "created_at": "2026-05-01T23:44:02.638845+00:00",
+    "updated_at": "2026-05-01T23:44:02.638845+00:00",
+    "file_path": "unknown_source",
+    "track_id": "insert_20260502_004402_d71c8372",
+    "error_msg": "Content already exists. Original doc_id: doc-2fe6ae711a622abb39864c14edcad2a8, Status: failed",
+    "metadata": {
+      "is_duplicate": true,
+      "original_doc_id": "doc-2fe6ae711a622abb39864c14edcad2a8",
+      "original_track_id": "insert_20260502_003930_78feaf47"
+    }
+  },
+  "dup-f8869bbbeae6b55e6394ba98d9acd719": {
+    "status": "failed",
+    "content_summary": "[DUPLICATE] Original document: doc-2fe6ae711a622abb39864c14edcad2a8",
+    "content_length": 213,
+    "chunks_count": 0,
+    "chunks_list": [],
+    "created_at": "2026-05-01T23:52:19.385065+00:00",
+    "updated_at": "2026-05-01T23:52:19.385065+00:00",
+    "file_path": "unknown_source",
+    "track_id": "insert_20260502_005219_1f1d5df7",
+    "error_msg": "Content already exists. Original doc_id: doc-2fe6ae711a622abb39864c14edcad2a8, Status: processed",
+    "metadata": {
+      "is_duplicate": true,
+      "original_doc_id": "doc-2fe6ae711a622abb39864c14edcad2a8",
+      "original_track_id": "insert_20260502_003930_78feaf47"
+    }
+  }
+}

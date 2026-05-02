@@ -156,7 +156,7 @@ class QueryRouter:
         keywords = self.COMPLEX_KEYWORDS.get(lang, self.COMPLEX_KEYWORDS["fr"])
         matched = [k for k in keywords if k in q_lower]
         if matched:
-            score += len(matched) * 0.4
+            score += len(matched) * 1.5  # Poids très fort pour déclencher LightRAG
             reasons.append(f"keywords:{matched[:2]}")
 
         # 3. Entités multiples (articles, codes)
@@ -505,7 +505,7 @@ class LexiosPipeline:
             except Exception as e:
                 log.warning(f"LightRAG init skipped: {e}")
 
-        if settings.USE_HYDE:
+        if getattr(settings, "USE_HYDE", True):
             try:
                 from hyde import get_hyde
                 self._hyde = get_hyde(llm_wrapper=self.rag.retriever.llm)

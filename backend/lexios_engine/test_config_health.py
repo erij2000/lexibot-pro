@@ -56,8 +56,8 @@ if __name__ == "__main__":
     validate_settings_logic()
     
     print("\n=== RÉSULTAT FINAL ===")
-    errors = config.validate_config()
-    if not errors:
+    is_healthy = config.validate_environment()
+    if is_healthy:
         print("✨ Ta configuration est SAINE et prête pour le développement.")
     else:
         print("❌ Des erreurs ont été détectées dans la configuration.")

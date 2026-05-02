@@ -1,5 +1,5 @@
 """
-rag_service.py — Lexios Brain Two Ultimate v15 (Production-Grade)
+rag_service.py — Lexios Brain Two
 =================================================================
 Architecture:
   Chunker (token-aware, legal boundaries) → BM25 (unicode) + ChromaDB (dense)
@@ -771,7 +771,7 @@ class HybridRetriever:
             emb = self.embedder.encode_query(q)
             skip = False
             for prev_emb in query_embs:
-                if util.cos_sim(prev_emb, emb).item() > 0.90:
+                if util.cos_sim(torch.tensor(prev_emb, dtype=torch.float32), torch.tensor(emb, dtype=torch.float32)).item() > 0.90:
                     skip = True
                     break
             if skip:
@@ -1304,9 +1304,14 @@ class LexiosRAG:
         top_k: int = None,
         metadata_filter: Optional[Dict] = None,
     ) -> Dict[str, Any]:
-        return await self.retriever.query_for_eval(
+        chunks, stats, graph_ctx = await self.retriever.retrieve(
             question, top_k=top_k, metadata_filter=metadata_filter
         )
+        return {
+            "contexts": chunks,
+            "sources": list(set(getattr(c, "article_id", "unknown") for c in chunks)),
+            "stats": stats
+        }
 
     async def generate_with_context(
         self,

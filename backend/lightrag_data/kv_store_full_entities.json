@@ -1,0 +1,18 @@
+{
+  "doc-2fe6ae711a622abb39864c14edcad2a8": {
+    "entity_names": [
+      "Tax Revenues",
+      "Programs",
+      "State Resources",
+      "State Expenditures",
+      "Tasks",
+      "Budget Credits",
+      "Finance Law",
+      "State Budget"
+    ],
+    "count": 8,
+    "create_time": 1777679049,
+    "update_time": 1777679049,
+    "_id": "doc-2fe6ae711a622abb39864c14edcad2a8"
+  }
+}

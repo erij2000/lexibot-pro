@@ -21,11 +21,10 @@ import aiohttp
 logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(levelname)s: %(message)s')
 
 try:
-    from surya.ocr import run_ocr
-    from surya.model.detection.model import load_model as load_det_model
-    from surya.model.detection.processor import load_processor as load_det_processor
-    from surya.model.recognition.model import load_model as load_rec_model
-    from surya.model.recognition.processor import load_processor as load_rec_processor
+    from surya.recognition import RecognitionPredictor
+    from surya.detection import DetectionPredictor
+    from surya.foundation import FoundationPredictor
+    from surya.common.surya.schema import TaskNames
     HAS_SURYA = True
 except ImportError:
     HAS_SURYA = False
@@ -430,21 +429,22 @@ class LegalOCR:
 
     def _get_marker(self):
         if self._marker_models is None:
-            from marker.convert import convert_single_pdf
-            from marker.models import load_all_models
-            log.info("Chargement Marker...")
-            self._marker_models = (convert_single_pdf, load_all_models())
+            from marker.converters.pdf import PdfConverter
+            from marker.models import create_model_dict
+            log.info("Chargement Marker (Modern API)...")
+            # Use CPU by default if GPU not detected
+            device = settings.EMBED_DEVICE
+            self._marker_models = PdfConverter(artifact_dict=create_model_dict(device=device))
         return self._marker_models
 
     def _get_surya(self):
         with _surya_lock:
             if self._surya_models is None and HAS_SURYA:
-                log.info("Chargement Surya...")
+                log.info("Chargement Surya (Modern API)...")
+                foundation = FoundationPredictor()
                 self._surya_models = {
-                    "det_processor": load_det_processor(),
-                    "det_model": load_det_model(),
-                    "rec_model": load_rec_model(),
-                    "rec_processor": load_rec_processor()
+                    "det": DetectionPredictor(),
+                    "rec": RecognitionPredictor(foundation)
                 }
             return self._surya_models
 
@@ -581,16 +581,16 @@ Format: {{"classification": "...", "parties": [], "articles_cites": [], "dates_i
 
         if ext in SUPPORTED_PDF:
             try:
-                converter, model_loader = self._get_marker()
-                models = model_loader()
-
-                text, _, meta = converter(str(path), models)
-
+                converter = self._get_marker()
+                # marker-pdf 1.10.2 returns a RenderedDocument object
+                rendered = converter(str(path))
+                text = rendered.markdown
+                
                 print("TEXT OCR (PDF) =", text[:200])
                 print("LEN =", len(text))
 
                 engine = "marker"
-                pages = meta.get("num_pages", 1)
+                pages = getattr(converter, "page_count", 1)
 
                 page_breaks = [m.start() for m in re.finditer(r"(?i)\bPage\s+\d+\b", text)]
 
@@ -644,18 +644,15 @@ Format: {{"classification": "...", "parties": [], "articles_cites": [], "dates_i
                 print("HAS_SURYA =", HAS_SURYA)
                 print("MODELS LOADED =", bool(models))
 
-                preds = run_ocr(
+                predictions_by_image = models["rec"](
                     [img],
-                    [["ar", "fr"]],
-                    models["det_model"],
-                    models["det_processor"],
-                    models["rec_model"],
-                    models["rec_processor"]
+                    task_names=[TaskNames.ocr_with_boxes],
+                    det_predictor=models["det"]
                 )
 
                 text = "\n".join(
                     line.text
-                    for p in preds
+                    for p in predictions_by_image
                     for line in p.text_lines
                     if line.text.strip()
                 )

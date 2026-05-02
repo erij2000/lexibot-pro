@@ -1,0 +1,74 @@
+{
+  "State Budget": {
+    "chunk_ids": [
+      "chunk-2fe6ae711a622abb39864c14edcad2a8"
+    ],
+    "count": 1,
+    "create_time": 1777679048,
+    "update_time": 1777679048,
+    "_id": "State Budget"
+  },
+  "Finance Law": {
+    "chunk_ids": [
+      "chunk-2fe6ae711a622abb39864c14edcad2a8"
+    ],
+    "count": 1,
+    "create_time": 1777679048,
+    "update_time": 1777679048,
+    "_id": "Finance Law"
+  },
+  "State Expenditures": {
+    "chunk_ids": [
+      "chunk-2fe6ae711a622abb39864c14edcad2a8"
+    ],
+    "count": 1,
+    "create_time": 1777679048,
+    "update_time": 1777679048,
+    "_id": "State Expenditures"
+  },
+  "State Resources": {
+    "chunk_ids": [
+      "chunk-2fe6ae711a622abb39864c14edcad2a8"
+    ],
+    "count": 1,
+    "create_time": 1777679048,
+    "update_time": 1777679048,
+    "_id": "State Resources"
+  },
+  "Tax Revenues": {
+    "chunk_ids": [
+      "chunk-2fe6ae711a622abb39864c14edcad2a8"
+    ],
+    "count": 1,
+    "create_time": 1777679048,
+    "update_time": 1777679048,
+    "_id": "Tax Revenues"
+  },
+  "Budget Credits": {
+    "chunk_ids": [
+      "chunk-2fe6ae711a622abb39864c14edcad2a8"
+    ],
+    "count": 1,
+    "create_time": 1777679048,
+    "update_time": 1777679048,
+    "_id": "Budget Credits"
+  },
+  "Programs": {
+    "chunk_ids": [
+      "chunk-2fe6ae711a622abb39864c14edcad2a8"
+    ],
+    "count": 1,
+    "create_time": 1777679048,
+    "update_time": 1777679048,
+    "_id": "Programs"
+  },
+  "Tasks": {
+    "chunk_ids": [
+      "chunk-2fe6ae711a622abb39864c14edcad2a8"
+    ],
+    "count": 1,
+    "create_time": 1777679048,
+    "update_time": 1777679048,
+    "_id": "Tasks"
+  }
+}
