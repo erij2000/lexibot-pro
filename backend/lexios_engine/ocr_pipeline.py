@@ -70,7 +70,20 @@ except ImportError:
     HAS_HEIF = False
 
 from config import settings
-from core_embedder import count_tokens
+
+# Fast token estimator — no model, no tokenizer, no OOM
+# Replaces the core_embedder version which ran the real tokenizer and exploded
+# on 300-page legal codes (351k tokens > 8192 model limit)
+def count_tokens(text: str) -> int:
+    """Estimate token count without loading any model (~1.3 tokens/word)."""
+    if not text:
+        return 0
+    return int(len(text.split()) * 1.3)
+
+try:
+    from core_embedder import count_tokens as _orig_count_tokens  # noqa: F401 — imported but overridden above
+except ImportError:
+    pass
 
 try:
     from doc_detector import DocumentDetector
