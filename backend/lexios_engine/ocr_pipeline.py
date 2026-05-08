@@ -682,12 +682,22 @@ Format JSON attendu:
                     text_parts.append(page_text)
                 doc.close()
             else:
-                # Traitement Image classique
+                # Traitement Image classique avec Sécurité (EXIF / Truncation)
                 pages_count = 1
-                with Image.open(path) as img:
-                    img = img.convert("RGB")
-                    predictions = models["rec"]([img], [TaskNames.ocr_with_boxes], det_predictor=models["det"])
-                    text_parts.append("\n".join([line.text for p in predictions for line in p.text_lines if line.text.strip()]))
+                try:
+                    with Image.open(path) as raw_img:
+                        raw_img.verify() # Vérifie l'intégrité
+                    
+                    with Image.open(path) as raw_img:
+                        rgb_img = raw_img.convert("RGB")
+                        # Nettoyage des métadonnées Apple qui font bugger l'encodeur JPEG
+                        img = Image.frombytes('RGB', rgb_img.size, rgb_img.tobytes())
+                        
+                        predictions = models["rec"]([img], [TaskNames.ocr_with_boxes], det_predictor=models["det"])
+                        text_parts.append("\n".join([line.text for p in predictions for line in p.text_lines if line.text.strip()]))
+                except Exception as img_err:
+                    log.error(f"Image corrompue ou illisible {path.name}: {img_err}")
+                    return "", "failed", 0
 
             return "\n\n".join(text_parts), "surya", pages_count
 
