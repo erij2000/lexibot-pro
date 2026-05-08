@@ -70,6 +70,7 @@ except ImportError:
     HAS_HEIF = False
 
 from config import settings
+from core_llm import GroqLLMWrapper
 
 # Fast token estimator — no model, no tokenizer, no OOM
 # Replaces the core_embedder version which ran the real tokenizer and exploded
@@ -480,11 +481,14 @@ class TextChunker:
 
 class LegalOCR:
     def __init__(self, output_dir: str = None):
-        self.output_dir = Path(output_dir) if output_dir else Path(settings.OCR_OUTPUT_DIR)
+        self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        self.converter = None
+        self.llm = GroqLLMWrapper()
+        self._llm_semaphore = asyncio.Semaphore(2)  # Max 2 calls at once
         self.semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_OCR)
         self._session: Optional[aiohttp.ClientSession] = None
-        self._llm_semaphore = asyncio.Semaphore(5)
         self.chunker = TextChunker(
             chunk_size=settings.OCR_CHUNK_SIZE,
             overlap=settings.OCR_CHUNK_OVERLAP
@@ -576,59 +580,36 @@ class LegalOCR:
         return entities
 
     async def _call_llm_with_retry(self, text: str, context: str, max_retries: int = 2) -> Dict[str, Any]:
-        async with self._llm_semaphore:
-            prompt = f"""Analyse ce texte juridique tunisien. Retourne UNIQUEMENT JSON.
+        """Utilise GroqLLMWrapper pour une structuration robuste."""
+        # On augmente la fenêtre à 8000 caractères pour plus de précision
+        prompt = f"""Analyse ce texte juridique tunisien. Extrais les entités et fais un résumé.
+RETOURNE UNIQUEMENT UN OBJET JSON VALIDE.
 
 Contexte: {context}
-Texte: {text[:2000]}
+Texte: {text[:8000]}
 
-Format: {{"classification": "...", "parties": [], "articles_cites": [], "dates_importantes": [], "resume": "", "mots_cles": []}}"""
+Format JSON attendu:
+{{
+  "classification": "Loi | Décret | Arrêté | Jugement | Autre",
+  "parties": ["Liste des personnes ou institutions"],
+  "articles_cites": ["Art 1", "Art 2..."],
+  "dates_importantes": ["YYYY-MM-DD"],
+  "resume": "Résumé concis en français",
+  "mots_cles": ["mot1", "mot2"]
+}}"""
 
-            for attempt in range(max_retries):
-                try:
-                    session = await self._get_session()
-                    if settings.LLM_PROVIDER == "groq" and settings.GROQ_API_KEY:
-                        payload = {
-                            "model": settings.GROQ_MODEL,
-                            "messages": [
-                                {"role": "system", "content": "Expert juridique. JSON uniquement."},
-                                {"role": "user", "content": prompt}
-                            ],
-                            "response_format": {"type": "json_object"},
-                            "temperature": 0.1
-                        }
-                        headers = {"Authorization": f"Bearer {settings.GROQ_API_KEY}"}
-                        async with session.post(
-                            "https://api.groq.com/openai/v1/chat/completions",
-                            json=payload,
-                            headers=headers
-                        ) as resp:
-                            if resp.status == 200:
-                                data = await resp.json()
-                                content = data["choices"][0]["message"]["content"]
-                                return safe_json_parse(content)
-                    else:
-                        payload = {
-                            "model": settings.OLLAMA_MODEL,
-                            "messages": [
-                                {"role": "system", "content": "Expert juridique. JSON uniquement."},
-                                {"role": "user", "content": prompt}
-                            ],
-                            "format": "json",
-                            "stream": False,
-                            "options": {"temperature": 0.1}
-                        }
-                        async with session.post(f"{settings.OLLAMA_HOST}/api/chat", json=payload) as resp:
-                            if resp.status == 200:
-                                data = await resp.json()
-                                content = data["message"]["content"]
-                                return safe_json_parse(content)
-                except Exception as e:
-                    log.warning(f"LLM attempt {attempt+1} failed: {e}")
-                    await asyncio.sleep(1)
-
-            log.warning("LLM extraction returned empty after all retries")
-            return {}
+        try:
+            content = await self.llm(
+                prompt=prompt,
+                system_prompt="Tu es un expert en droit tunisien. Tu réponds exclusivement en JSON.",
+                use_json=True,
+                temperature=0.1
+            )
+            return safe_json_parse(content)
+        except Exception as e:
+            log.warning(f"⚠️ Échec structuration LLM: {e}")
+            # Fallback sur l'extraction regex si l'IA échoue
+            return self._extract_entities_simple(text)
 
     # ========================================================================
     # PDF EXTRACTION — 3-layer strategy with CID cleaning
