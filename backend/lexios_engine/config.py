@@ -115,9 +115,9 @@ class Settings:
     # --- LLM (GROQ) ---
     LLM_PROVIDER: str = "groq"
     GROQ_API_KEY: Optional[str] = os.getenv("GROQ_API_KEY")
-    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "qwen-2.5-32b")
-    GROQ_BACKUP_MODEL: str = "llama-3.3-70b-versatile"
-    LLM_TIMEOUT: int = 60
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    GROQ_BACKUP_MODEL: str = "mixtral-8x7b-32768"
+    LLM_TIMEOUT: int = 120
     GROQ_TEMPERATURE: float = 0.1
     GROQ_MAX_TOKENS: int = 4096
     GROQ_RETRY_ATTEMPTS: int = 3
