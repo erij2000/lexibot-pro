@@ -648,9 +648,52 @@ Format JSON attendu:
             log.warning(f"Échec PyMuPDF: {e}")
 
         # --- 2. Fallback ULTIME : Surya OCR (visuel) ---
-        # On utilise notre méthode d'OCR image mais sur le PDF
+        # On utilise notre nouvelle méthode d'OCR image mais sur le PDF
         log.info(f"🚀 Lancement Surya OCR (Vision) pour {path.name}...")
         return await self._extract_with_surya(path)
+
+    async def _extract_with_surya(self, path: Path) -> Tuple[str, str, int]:
+        """OCR de secours utilisant Surya (Vision). Gère images et PDF (via conversion)."""
+        import os
+        from PIL import Image
+        from surya.schema import TaskNames
+
+        text_parts = []
+        pages_count = 0
+        
+        try:
+            models = self._get_surya()
+            if models is None:
+                raise Exception("Modèles Surya non chargés.")
+
+            if path.suffix.lower() in SUPPORTED_PDF:
+                # Traitement PDF page par page
+                import fitz
+                doc = fitz.open(str(path))
+                pages_count = len(doc)
+                
+                for i in range(pages_count):
+                    page = doc.load_page(i)
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2)) # Zoom 2x pour précision
+                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    
+                    predictions = models["rec"]([img], [TaskNames.ocr_with_boxes], det_predictor=models["det"])
+                    page_text = "\n".join([line.text for p in predictions for line in p.text_lines if line.text.strip()])
+                    text_parts.append(page_text)
+                doc.close()
+            else:
+                # Traitement Image classique
+                pages_count = 1
+                with Image.open(path) as img:
+                    img = img.convert("RGB")
+                    predictions = models["rec"]([img], [TaskNames.ocr_with_boxes], det_predictor=models["det"])
+                    text_parts.append("\n".join([line.text for p in predictions for line in p.text_lines if line.text.strip()]))
+
+            return "\n\n".join(text_parts), "surya", pages_count
+
+        except Exception as e:
+            log.error(f"❌ Surya a échoué sur {path.name}: {e}")
+            return "", "failed", 1
 
     # ========================================================================
     # MÉTHODE PRINCIPALE : process_file
@@ -709,65 +752,10 @@ Format JSON attendu:
             if not HAS_SURYA:
                 log.error("Surya not installed")
                 return None
-
-            tmp_path = None
-            try:
-                log.info(f"OCR image: {path.name}")
-
-                # 1. Open image — pillow_heif handles HEIC; PIL handles JPEG/PNG
-                #    PIL.UnidentifiedImageError means the file is corrupt/truncated
-                try:
-                    raw_img = Image.open(path)
-                    raw_img.verify()          # detect truncated files early
-                except Exception as open_err:
-                    log.error(f"Image unreadable (corrupt/truncated?): {path.name} — {open_err}")
-                    return None
-
-                # Re-open after verify() (verify closes the file)
-                with Image.open(path) as raw_img:
-                    rgb_img = raw_img.convert("RGB")
-                    # Strip Apple EXIF metadata that confuses JPEG encoder
-                    img_clean = Image.frombytes('RGB', rgb_img.size, rgb_img.tobytes())
-
-                # 2. Save to clean temp JPEG
-                tmp_path = path.with_suffix(".tmp.jpg")
-                img_clean.save(tmp_path, format="JPEG", quality=95, optimize=True)
-
-                # 3. Run Surya on the clean JPEG
-                with Image.open(tmp_path) as img:
-                    models = self._get_surya()
-                    if models is None:
-                        log.error("Surya models could not be loaded")
-                        return None
-
-                    predictions_by_image = models["rec"](
-                        [img],
-                        task_names=[TaskNames.ocr_with_boxes],
-                        det_predictor=models["det"]
-                    )
-
-                text = "\n".join(
-                    line.text
-                    for p in predictions_by_image
-                    for line in p.text_lines
-                    if line.text.strip()
-                )
-
-                log.info(f"OCR image OK: {path.name} — {len(text)} chars")
-                engine = "surya"
-                pages = 1
-
-            except Exception as e:
-                log.error(f"Surya failed on {path.name}: {e}", exc_info=True)
+            
+            text, engine, pages = await self._extract_with_surya(path)
+            if not text:
                 return None
-
-            finally:
-                # 4. Always clean up temp file
-                if tmp_path and tmp_path.exists():
-                    try:
-                        os.remove(tmp_path)
-                    except Exception as cleanup_e:
-                        log.warning(f"Could not delete temp file {tmp_path}: {cleanup_e}")
 
         else:
             log.error(f"Format non supporté: {ext}")
