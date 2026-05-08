@@ -875,19 +875,24 @@ Format JSON attendu:
             raise FileNotFoundError(f"Dossier introuvable: {root}")
 
         files = []
-        # On scanne TOUT récursivement (plus fiable sur Google Drive)
-        all_paths = list(root.rglob("*"))
-        for p in all_paths:
-            if p.is_file() and p.suffix.lower() in (SUPPORTED_PDF | SUPPORTED_IMAGE):
-                if not p.name.startswith("."):
-                    files.append(p)
+        # On utilise os.walk : c'est la méthode la plus fiable pour Google Drive
+        for root_dir, dirs, filenames in os.walk(str(root)):
+            for filename in filenames:
+                if filename.startswith("."):
+                    continue
+                
+                path = Path(root_dir) / filename
+                ext = path.suffix.lower()
+                
+                if ext in SUPPORTED_PDF or ext in SUPPORTED_IMAGE:
+                    files.append(path)
         
         # Déduplication
         files = list(set(files))
         
-        print(f"🔍 Scan terminé : {len(files)} fichiers trouvés dans le Drive.")
+        print(f"🔍 Scan terminé : {len(files)} fichiers compatibles trouvés dans le Drive.")
         if len(files) == 0:
-            print("⚠️ Aucun fichier PDF ou Image trouvé. Vérifie le chemin ou si le Drive est bien monté.")
+            print("⚠️ Aucun fichier PDF ou Image trouvé. Vérifie les extensions.")
             return []
 
         log.info(f"OCR démarré: {len(files)} fichiers")
