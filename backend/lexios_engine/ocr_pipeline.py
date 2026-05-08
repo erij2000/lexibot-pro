@@ -870,8 +870,10 @@ Format JSON attendu:
         )
 
     async def process_folder(self, input_dir: str) -> List[LexiosDoc]:
+        print("🚀 [VERSION] Elite v9.8 (Deep Scan)")
         root = Path(input_dir)
         if not root.exists():
+            print(f"❌ ERREUR : Le dossier '{input_dir}' n'existe pas !")
             raise FileNotFoundError(f"Dossier introuvable: {root}")
 
         files = []
