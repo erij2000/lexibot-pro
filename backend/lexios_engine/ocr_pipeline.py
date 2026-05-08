@@ -486,6 +486,7 @@ class LegalOCR:
         
         self.converter = None
         self.llm = GroqLLMWrapper()
+        self.normalizer = TextNormalizer()
         self._llm_semaphore = asyncio.Semaphore(2)  # Max 2 calls at once
         self.semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_OCR)
         self._session: Optional[aiohttp.ClientSession] = None
