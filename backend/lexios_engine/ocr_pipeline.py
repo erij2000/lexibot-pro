@@ -693,7 +693,7 @@ Format JSON attendu:
         # =========================================================
 
         if ext in SUPPORTED_PDF:
-            text, engine, pages = self._extract_pdf_text(path)
+            text, engine, pages = await self._extract_pdf_text(path)
 
             if not text:
                 log.error(f"Toutes les méthodes PDF ont échoué pour: {path.name}")
@@ -857,14 +857,17 @@ Format JSON attendu:
             return []
 
         log.info(f"OCR démarré: {len(files)} fichiers")
-        sem = asyncio.Semaphore(10)
+        docs = []
+        for i, f in enumerate(files):
+            try:
+                doc = await self.process_file(f)
+                if doc:
+                    docs.append(doc)
+                if i < len(files) - 1:
+                    await asyncio.sleep(1.2)
+            except Exception as e:
+                log.error(f"Erreur sur {f.name}: {e}")
 
-        async def process_with_sem(f):
-            async with sem:
-                return await self.process_file(f)
-
-        results = await asyncio.gather(*[process_with_sem(f) for f in files], return_exceptions=True)
-        docs = [r for r in results if isinstance(r, LexiosDoc)]
         log.info(f"OCR terminé: {len(docs)}/{len(files)} succès")
         return docs
 
