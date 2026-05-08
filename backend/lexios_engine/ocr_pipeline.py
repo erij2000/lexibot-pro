@@ -611,87 +611,46 @@ Format JSON attendu:
             # Fallback sur l'extraction regex si l'IA échoue
             return self._extract_entities_simple(text)
 
-    # ========================================================================
-    # PDF EXTRACTION — 3-layer strategy with CID cleaning
-    # ========================================================================
+    def _is_garbage_text(self, text: str) -> bool:
+        """Détecte si le texte extrait est corrompu (Mojibake ou caractères de contrôle)."""
+        if not text or len(text.strip()) < 10:
+            return True
+        
+        # Caractères de contrôle (0-31) hors newline/tab
+        control_chars = sum(1 for c in text if ord(c) < 32 and c not in "\n\r\t")
+        # Caractères "Private Use Area" (souvent signe d'encodage brisé dans les PDF)
+        private_chars = sum(1 for c in text if 0xE000 <= ord(c) <= 0xF8FF)
+        
+        bad_ratio = (control_chars + private_chars) / len(text)
+        
+        # Si plus de 5% de texte bizarre ou trop de caractères privés
+        return bad_ratio > 0.05 or private_chars > 50
 
-    def _extract_pdf_text(self, path: Path) -> Tuple[str, str, int]:
-        """
-        Try three methods in order. For large PDFs, use chunked marker processing.
-        """
-        # --- 1. pymupdf (fitz) ---
+    async def _extract_pdf_text(self, path: Path) -> Tuple[str, str, int]:
+        """Extrait le texte d'un PDF avec détection de corruption et fallback vers Surya OCR."""
+        # --- 1. Essai rapide avec PyMuPDF ---
         try:
             import fitz
             doc = fitz.open(str(path))
             pages = len(doc)
             parts = []
             for page in doc:
-                t = page.get_text("text")
-                if t: parts.append(t)
+                parts.append(page.get_text())
             doc.close()
-            text = clean_cid("\n".join(parts))
-            if text and not text_is_cid_garbage(text):
-                log.info(f"PDF extracted via pymupdf: {path.name} ({pages} p)")
+            
+            text = "\n".join(parts)
+            if not self._is_garbage_text(text):
+                log.info(f"✅ PDF extrait via PyMuPDF: {path.name}")
                 return text, "pymupdf", pages
+            else:
+                log.warning(f"⚠️ Texte corrompu via PyMuPDF sur {path.name}. Passage à l'OCR visuel...")
         except Exception as e:
-            log.warning(f"pymupdf failed: {e}")
+            log.warning(f"Échec PyMuPDF: {e}")
 
-        # --- 2. pdfplumber ---
-        try:
-            import pdfplumber
-            with pdfplumber.open(path) as pdf:
-                pages = len(pdf.pages)
-                parts = [p.extract_text() for p in pdf.pages if p.extract_text()]
-            text = clean_cid("\n".join(parts))
-            if text and not text_is_cid_garbage(text):
-                log.info(f"PDF extracted via pdfplumber: {path.name} ({pages} p)")
-                return text, "pdfplumber", pages
-        except Exception as e:
-            log.warning(f"pdfplumber failed: {e}")
-
-        # --- 3. marker (Chunked for safety) ---
-        try:
-            import fitz
-            doc = fitz.open(str(path))
-            pages = len(doc)
-            converter = self._get_marker()
-            
-            if pages <= 30:
-                rendered = converter(str(path))
-                text = clean_cid(rendered.markdown)
-                doc.close()
-                return text, "marker", pages
-            
-            # Massive PDF detected: Process in chunks of 20 pages
-            log.info(f"Massive PDF detected ({pages} p). Using chunked Marker strategy...")
-            all_text = []
-            chunk_size = 20
-            
-            for i in range(0, pages, chunk_size):
-                end_page = min(i + chunk_size, pages)
-                log.info(f"  Processing chunk: pages {i+1} to {end_page}...")
-                
-                # Create a temporary PDF for the chunk
-                chunk_pdf = path.parent / f"{path.stem}_chunk_{i}.pdf"
-                new_doc = fitz.open()
-                new_doc.insert_pdf(doc, from_page=i, to_page=end_page-1)
-                new_doc.save(str(chunk_pdf))
-                new_doc.close()
-                
-                try:
-                    rendered = converter(str(chunk_pdf))
-                    all_text.append(rendered.markdown)
-                finally:
-                    if chunk_pdf.exists(): os.remove(chunk_pdf)
-            
-            doc.close()
-            final_text = clean_cid("\n\n".join(all_text))
-            return final_text, "marker_chunked", pages
-            
-        except Exception as e:
-            log.error(f"marker failed on {path.name}: {e}")
-
-        return "", "failed", 1
+        # --- 2. Fallback ULTIME : Surya OCR (visuel) ---
+        # On utilise notre méthode d'OCR image mais sur le PDF
+        log.info(f"🚀 Lancement Surya OCR (Vision) pour {path.name}...")
+        return await self._extract_with_surya(path)
 
     # ========================================================================
     # MÉTHODE PRINCIPALE : process_file
