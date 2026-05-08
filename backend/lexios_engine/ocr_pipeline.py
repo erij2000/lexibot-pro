@@ -581,12 +581,12 @@ class LegalOCR:
 
     async def _call_llm_with_retry(self, text: str, context: str, max_retries: int = 2) -> Dict[str, Any]:
         """Utilise GroqLLMWrapper pour une structuration robuste."""
-        # On augmente la fenêtre à 8000 caractères pour plus de précision
+        # On limite à 3000 chars pour rester sous le TPM limit (6000) de Groq
         prompt = f"""Analyse ce texte juridique tunisien. Extrais les entités et fais un résumé.
 RETOURNE UNIQUEMENT UN OBJET JSON VALIDE.
 
 Contexte: {context}
-Texte: {text[:8000]}
+Texte: {text[:3000]}
 
 Format JSON attendu:
 {{

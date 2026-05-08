@@ -119,7 +119,7 @@ class Settings:
     GROQ_BACKUP_MODEL: str = "llama-3.1-8b-instant"
     LLM_TIMEOUT: int = 180
     GROQ_TEMPERATURE: float = 0.1
-    GROQ_MAX_TOKENS: int = 8000
+    GROQ_MAX_TOKENS: int = 2048
     GROQ_RETRY_ATTEMPTS: int = 3
     GROQ_RETRY_DELAY: float = 1.5
     GROQ_MIN_INTERVAL: float = 3.0  # req/min (configurable)
