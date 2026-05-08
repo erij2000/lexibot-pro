@@ -108,7 +108,7 @@ class Settings:
 
     # --- INFOS PROJET ---
     PROJECT_NAME: str = "Lexibot PRO"
-    VERSION: str = "6.4.0"
+    VERSION: str = "10.0.0"
     ENVIRONMENT: str = os.getenv("ENV", "development")
     START_TIME: str = datetime.now().isoformat()
 
@@ -116,8 +116,8 @@ class Settings:
     LLM_PROVIDER: str = "groq"
     GROQ_API_KEY: Optional[str] = os.getenv("GROQ_API_KEY")
     GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-    GROQ_BACKUP_MODEL: str = "mixtral-8x7b-32768"
-    LLM_TIMEOUT: int = 120
+    GROQ_BACKUP_MODEL: str = "llama-3.1-8b-instant"
+    LLM_TIMEOUT: int = 180
     GROQ_TEMPERATURE: float = 0.1
     GROQ_MAX_TOKENS: int = 4096
     GROQ_RETRY_ATTEMPTS: int = 3
