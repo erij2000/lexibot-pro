@@ -705,13 +705,23 @@ Format JSON attendu:
             return None
 
         # --- SMART SKIP: Évite de refaire l'OCR si le JSON existe déjà ---
-        # On cherche un fichier qui commence par le nom du PDF/Image
-        existing = list(self.output_dir.glob(f"{path.stem}_*.json"))
-        if existing:
-            log.info(f"⏩ [SKIP] Déjà traité: {path.name}")
-            # On pourrait charger et retourner le doc, mais pour le batch processing,
-            # retourner None (ou un signal de skip) suffit pour avancer.
-            return None
+        # On recrée le chemin de sortie théorique (avec la hiérarchie)
+        drive_context = self._extract_topology(path)
+        subfolder = self.output_dir.joinpath(*drive_context.hierarchy)
+        match_pattern = f"{path.stem}_*.json"
+        
+        if subfolder.exists():
+            existing = list(subfolder.glob(match_pattern))
+            if existing:
+                for json_file in existing:
+                    try:
+                        with open(json_file, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                            if data.get("source_file") == str(path):
+                                log.info(f"⏩ [SKIP] Déjà traité: {path.name}")
+                                return None
+                    except:
+                        continue
 
         ext = path.suffix.lower()
         text = ""
@@ -848,7 +858,12 @@ Format JSON attendu:
         return doc
 
     async def _write_output(self, doc: LexiosDoc, path: Path):
-        json_path = self.output_dir / f"{path.stem}_{doc.uid}.json"
+        """Écrit le JSON en respectant la hiérarchie des dossiers source."""
+        # On crée le sous-dossier correspondant à la hiérarchie du Drive
+        subfolder = self.output_dir.joinpath(*doc.drive.hierarchy)
+        subfolder.mkdir(parents=True, exist_ok=True)
+        
+        json_path = subfolder / f"{path.stem}_{doc.uid}.json"
         json_path.write_text(
             json.dumps(doc.to_dict(), indent=2, ensure_ascii=False),
             encoding="utf-8"
@@ -860,8 +875,14 @@ Format JSON attendu:
             raise FileNotFoundError(f"Dossier introuvable: {root}")
 
         files = []
+        # Recherche insensible à la casse (.pdf, .PDF, .jpg, .JPG...)
         for ext in (SUPPORTED_PDF | SUPPORTED_IMAGE):
-            files.extend(root.rglob(f"*{ext}"))
+            # Glob récursif pour chaque extension
+            files.extend(root.rglob(f"*{ext.lower()}"))
+            files.extend(root.rglob(f"*{ext.upper()}"))
+        
+        # Déduplication et filtrage des fichiers cachés
+        files = list(set(files))
         files = [f for f in files if not f.name.startswith(".")]
 
         log.info(f"OCR démarré: {len(files)} fichiers")
