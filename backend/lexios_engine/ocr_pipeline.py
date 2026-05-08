@@ -657,7 +657,7 @@ Format JSON attendu:
         """OCR de secours utilisant Surya (Vision). Gère images et PDF (via conversion)."""
         import os
         from PIL import Image
-        from surya.schema import TaskNames
+        from surya.common.surya.schema import TaskNames
 
         text_parts = []
         pages_count = 0
