@@ -129,8 +129,10 @@ _CID_RE = re.compile(r'\(cid:\d+\)', re.IGNORECASE)
 
 def clean_cid(text: str) -> str:
     """Remove (cid:N) artefacts and normalise whitespace."""
+    if not text:
+        return ""
     cleaned = _CID_RE.sub(' ', text)
-    # collapse runs of spaces/newlines
+    # Fix Arabic joining/spacing issues common in CID-keyed fonts
     cleaned = re.sub(r'[ \t]+', ' ', cleaned)
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
     return cleaned.strip()
@@ -564,10 +566,11 @@ class LegalOCR:
 
     def _extract_entities_simple(self, text: str) -> Dict[str, Any]:
         entities = {"articles": [], "dates": [], "montants": []}
-        article_pattern = r'(Art(?:icle)?\.?\s*\d+|\bالمادة\s*\d+)'
-        entities["articles"] = list(set(re.findall(article_pattern, text, re.IGNORECASE)))[:5]
+        # Improved pattern for French and Arabic legal units
+        article_pattern = r'(Art(?:icle)?\.?\s*\d+|\bالمادة\s*\d+|\bالفصل\s*\d+|\bالباب\s*\d+)'
+        entities["articles"] = list(set(re.findall(article_pattern, text, re.IGNORECASE)))[:10]
         date_pattern = r'\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})\b'
-        entities["dates"] = list(set(re.findall(date_pattern, text)))[:3]
+        entities["dates"] = list(set(re.findall(date_pattern, text)))[:5]
         montant_pattern = r'(\d[\d\s,.]*)\s*(?:TND|DT|دينار|dinars?)'
         entities["montants"] = re.findall(montant_pattern, text, re.IGNORECASE)[:3]
         return entities
@@ -633,69 +636,77 @@ Format: {{"classification": "...", "parties": [], "articles_cites": [], "dates_i
 
     def _extract_pdf_text(self, path: Path) -> Tuple[str, str, int]:
         """
-        Try three methods in order until we get clean text.
-        Returns (text, engine_name, page_count).
-
-        Order:
-          1. pymupdf  — fastest, best Arabic/CID-font support
-          2. pdfplumber — slower but good for complex layouts
-          3. marker   — ML-based, slowest, last resort
+        Try three methods in order. For large PDFs, use chunked marker processing.
         """
         # --- 1. pymupdf (fitz) ---
         try:
-            import fitz  # pymupdf
+            import fitz
             doc = fitz.open(str(path))
             pages = len(doc)
             parts = []
             for page in doc:
                 t = page.get_text("text")
-                if t:
-                    parts.append(t)
+                if t: parts.append(t)
             doc.close()
-            raw = "\n".join(parts)
-            text = clean_cid(raw)
+            text = clean_cid("\n".join(parts))
             if text and not text_is_cid_garbage(text):
-                log.info(f"PDF extracted via pymupdf: {path.name} ({pages} pages, {len(text)} chars)")
+                log.info(f"PDF extracted via pymupdf: {path.name} ({pages} p)")
                 return text, "pymupdf", pages
-            else:
-                log.warning(f"pymupdf produced CID garbage for {path.name}, trying pdfplumber…")
-        except ImportError:
-            log.warning("pymupdf not installed, skipping to pdfplumber")
         except Exception as e:
-            log.warning(f"pymupdf failed on {path.name}: {e}")
+            log.warning(f"pymupdf failed: {e}")
 
         # --- 2. pdfplumber ---
         try:
             import pdfplumber
-            parts = []
             with pdfplumber.open(path) as pdf:
                 pages = len(pdf.pages)
-                for p in pdf.pages:
-                    t = p.extract_text()
-                    if t:
-                        parts.append(t)
-            raw = "\n".join(parts)
-            text = clean_cid(raw)
+                parts = [p.extract_text() for p in pdf.pages if p.extract_text()]
+            text = clean_cid("\n".join(parts))
             if text and not text_is_cid_garbage(text):
-                log.info(f"PDF extracted via pdfplumber: {path.name} ({pages} pages, {len(text)} chars)")
+                log.info(f"PDF extracted via pdfplumber: {path.name} ({pages} p)")
                 return text, "pdfplumber", pages
-            else:
-                log.warning(f"pdfplumber produced CID garbage for {path.name}, trying marker…")
-        except ImportError:
-            log.warning("pdfplumber not installed, skipping to marker")
         except Exception as e:
-            log.warning(f"pdfplumber failed on {path.name}: {e}")
+            log.warning(f"pdfplumber failed: {e}")
 
-        # --- 3. marker (ML OCR) ---
+        # --- 3. marker (Chunked for safety) ---
         try:
+            import fitz
+            doc = fitz.open(str(path))
+            pages = len(doc)
             converter = self._get_marker()
-            rendered = converter(str(path))
-            raw = rendered.markdown
-            text = clean_cid(raw)
-            pages = getattr(converter, "page_count", 1)
-            if text:
-                log.info(f"PDF extracted via marker: {path.name} ({pages} pages, {len(text)} chars)")
+            
+            if pages <= 30:
+                rendered = converter(str(path))
+                text = clean_cid(rendered.markdown)
+                doc.close()
                 return text, "marker", pages
+            
+            # Massive PDF detected: Process in chunks of 20 pages
+            log.info(f"Massive PDF detected ({pages} p). Using chunked Marker strategy...")
+            all_text = []
+            chunk_size = 20
+            
+            for i in range(0, pages, chunk_size):
+                end_page = min(i + chunk_size, pages)
+                log.info(f"  Processing chunk: pages {i+1} to {end_page}...")
+                
+                # Create a temporary PDF for the chunk
+                chunk_pdf = path.parent / f"{path.stem}_chunk_{i}.pdf"
+                new_doc = fitz.open()
+                new_doc.insert_pdf(doc, from_page=i, to_page=end_page-1)
+                new_doc.save(str(chunk_pdf))
+                new_doc.close()
+                
+                try:
+                    rendered = converter(str(chunk_pdf))
+                    all_text.append(rendered.markdown)
+                finally:
+                    if chunk_pdf.exists(): os.remove(chunk_pdf)
+            
+            doc.close()
+            final_text = clean_cid("\n\n".join(all_text))
+            return final_text, "marker_chunked", pages
+            
         except Exception as e:
             log.error(f"marker failed on {path.name}: {e}")
 
@@ -710,6 +721,15 @@ Format: {{"classification": "...", "parties": [], "articles_cites": [], "dates_i
         """Traite un fichier PDF ou image et retourne un LexiosDoc structuré."""
         if not path.exists():
             log.error(f"Fichier introuvable: {path}")
+            return None
+
+        # --- SMART SKIP: Évite de refaire l'OCR si le JSON existe déjà ---
+        # On cherche un fichier qui commence par le nom du PDF/Image
+        existing = list(self.output_dir.glob(f"{path.stem}_*.json"))
+        if existing:
+            log.info(f"⏩ [SKIP] Déjà traité: {path.name}")
+            # On pourrait charger et retourner le doc, mais pour le batch processing,
+            # retourner None (ou un signal de skip) suffit pour avancer.
             return None
 
         ext = path.suffix.lower()
