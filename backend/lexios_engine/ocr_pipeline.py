@@ -875,15 +875,20 @@ Format JSON attendu:
             raise FileNotFoundError(f"Dossier introuvable: {root}")
 
         files = []
-        # Recherche insensible à la casse (.pdf, .PDF, .jpg, .JPG...)
-        for ext in (SUPPORTED_PDF | SUPPORTED_IMAGE):
-            # Glob récursif pour chaque extension
-            files.extend(root.rglob(f"*{ext.lower()}"))
-            files.extend(root.rglob(f"*{ext.upper()}"))
+        # On scanne TOUT récursivement (plus fiable sur Google Drive)
+        all_paths = list(root.rglob("*"))
+        for p in all_paths:
+            if p.is_file() and p.suffix.lower() in (SUPPORTED_PDF | SUPPORTED_IMAGE):
+                if not p.name.startswith("."):
+                    files.append(p)
         
-        # Déduplication et filtrage des fichiers cachés
+        # Déduplication
         files = list(set(files))
-        files = [f for f in files if not f.name.startswith(".")]
+        
+        print(f"🔍 Scan terminé : {len(files)} fichiers trouvés dans le Drive.")
+        if len(files) == 0:
+            print("⚠️ Aucun fichier PDF ou Image trouvé. Vérifie le chemin ou si le Drive est bien monté.")
+            return []
 
         log.info(f"OCR démarré: {len(files)} fichiers")
         sem = asyncio.Semaphore(10)
